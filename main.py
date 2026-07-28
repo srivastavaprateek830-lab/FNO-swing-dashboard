@@ -55,7 +55,7 @@ col1, col2, col3 = st.columns([1, 1.1, 1.2])
 with col1:
     with st.container(border=True):
         st.markdown("#### 📋 Core Watchlist Feed")
-        styled_table = master_database Master_database.copy() if 'master_database' in locals() else master_database
+        styled_table = master_database.copy()
         st.dataframe(master_database[["Symbol", "Price", "RSI", "OI_Chg"]], use_container_width=True, hide_index=True, height=290)
 
 with col2:
