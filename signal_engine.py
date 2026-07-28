@@ -101,7 +101,6 @@ class TradingEngine:
     def optimize_strike_with_targets(self, underlying_symbol: str, current_price: float, atr: float, target_delta: float = 0.5) -> dict:
         raw_chain = self.fetcher.fetch_option_chain(underlying_symbol)
         
-        # SMART FALLBACK SHIELD: Active if Dhan keys are missing or server connection is unestablished
         if not raw_chain or len(raw_chain) == 0:
             mock_strike = round(current_price, -2)
             mock_premium = round(current_price * 0.02, 2)
@@ -123,7 +122,7 @@ class TradingEngine:
             return {"status": "Error", "message": "No active contracts cleared expiry filter constraints"}
 
         df['delta_diff'] = (df['delta'] - target_delta).abs()
-        optimal_row = df.sort_values(by='delta_diff').iloc
+        optimal_row = df.sort_values(by='delta_diff').iloc[0]
 
         stop_loss_spot = current_price - (1.5 * atr)
         take_profit_spot = current_price + (3.0 * atr)
