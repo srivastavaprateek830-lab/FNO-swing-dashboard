@@ -3,14 +3,13 @@ import pandas as pd
 from signal_engine import TradingEngine
 from securities_db import get_master_market_feed
 
-# Force application container to use standard compact width limits
+# Enforce professional wide-screen terminal view padding
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
-# Institutional Spacing Minimization Layer
 st.markdown("""
 <style>
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
-    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.3rem !important; }
+    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .stDataFrame div { font-size: 11px !important; }
     .matrix-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }
     .compact-text { font-family: monospace; font-size: 11px; margin-bottom: 2px; line-height: 1.3; }
@@ -23,17 +22,8 @@ def get_engine():
 
 engine = get_engine()
 
-# --- SIDEBAR CONTROL PANEL SWITCH ---
-st.sidebar.header("🎛️ SYSTEM MODE CONTROLS")
-data_mode = st.sidebar.radio(
-    "Data Environment:", 
-    ("SIMULATION (Safe Mock Feed)", "LIVE MARKET (Dhan Connection)"),
-    key="active_data_mode"
-)
-force_mock_payload = True if "SIMULATION" in data_mode else False
-
 # --- FIXED UNIVERSAL DATABASE BRIDGE ---
-# UNLOCKED: Moved this outside any conditional loops so all 10 sectors and 180+ stocks load permanently 
+# Always loads all 10 sectors and 180+ stocks natively under all conditions
 master_database = get_master_market_feed()
 
 # --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
@@ -92,32 +82,19 @@ with right_panel:
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
         if len(selected_row_data.selection.rows) > 0:
-            default_index = int(selected_row_data.selection.rows)
+            default_index = int(selected_row_data.selection.rows[0])
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
-target_stock = target_stock_df.iloc
+# FIXED INDEX FINDER: Grabs the selected record item directly as an individual row object slice
+target_stock = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True).iloc[0]
 
-# Pass selection state tokens directly to live backend data loops
+# Pass selection state tokens straight to live Dhan data querying engines
 strike_details = engine.optimize_strike_with_targets(
     underlying_symbol_id=str(target_stock["ID"]),
     current_price=float(target_stock["Price"]),
     atr=float(target_stock["ATR"])
 )
-
-# Force immediate mock simulation parameters if user keeps control in simulation mode
-if force_mock_payload:
-    mock_strike = round(float(target_stock["Price"]), -2)
-    mock_premium = round(float(target_stock["Price"]) * 0.02, 2)
-    strike_details = {
-        "status": "Success", "strike": mock_strike, "expiry": "27-Aug-2026",
-        "delta": 0.50, "theta": -1.25, "current_premium": mock_premium, "type": "CE",
-        "spot_sl": round(float(target_stock["Price"]) - (1.5 * float(target_stock["ATR"])), 2), 
-        "spot_tp": round(float(target_stock["Price"]) + (3.0 * float(target_stock["ATR"])), 2),
-        "premium_sl": round(max(0.5, mock_premium - ((1.5 * float(target_stock["ATR"])) * 0.50)), 2),
-        "premium_tp": round(mock_premium + ((3.0 * float(target_stock["ATR"])) * 0.50), 2)
-    }
 
 # ==============================================================================
 # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
@@ -137,16 +114,13 @@ with mtf_box:
         st.dataframe(pd.DataFrame(mtf_matrix_row), use_container_width=True, hide_index=True)
         
         if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
-            if force_mock_payload:
-                st.success(f"[SIMULATION MODE] MTF Order payload verified for {selected_symbol}.")
+            payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "MTF")
+            response = engine.fetcher.place_live_order(payload)
+            if "orderStatus" in str(response) or "SUCCESS" in str(response).upper():
+                st.balloons()
+                st.success(f"✓ ORDER PLACED: Live MTF position fired for {selected_symbol}! Order ID: {response.get('data', {}).get('orderId', 'N/A')}")
             else:
-                payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "MTF")
-                response = engine.fetcher.place_live_order(payload)
-                if "orderStatus" in str(response) or "SUCCESS" in str(response).upper():
-                    st.balloons()
-                    st.success(f"✓ ORDER PLACED: Live MTF position fired for {selected_symbol}! Order ID: {response.get('data', {}).get('orderId', 'N/A')}")
-                else:
-                    st.error(f"Execution Failed: {response.get('remarks', 'Check connection or key permissions')}")
+                st.error(f"Execution Failed: {response.get('remarks', 'Check connection or key permissions')}")
 
 with fno_box:
     with st.container(border=True):
@@ -160,16 +134,12 @@ with fno_box:
             st.dataframe(pd.DataFrame(fno_matrix_row), use_container_width=True, hide_index=True)
             
             if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
-                if force_mock_payload:
+                payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "FNO")
+                response = engine.fetcher.place_live_order(payload)
+                if "orderStatus" in str(response) or "SUCCESS" in str(response).upper():
                     st.balloons()
-                    st.success(f"[SIMULATION MODE] Options Order routing payload verified for {selected_symbol}.")
+                    st.success(f"✓ ORDER FIRED: Live options contract sent to exchange! ID: {response.get('data', {}).get('orderId', 'N/A')}")
                 else:
-                    payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "FNO")
-                    response = engine.fetcher.place_live_order(payload)
-                    if "orderStatus" in str(response) or "SUCCESS" in str(response).upper():
-                        st.balloons()
-                        st.success(f"✓ ORDER FIRED: Live options contract sent to exchange! ID: {response.get('data', {}).get('orderId', 'N/A')}")
-                    else:
-                        st.error(f"Execution Failed: {response.get('remarks', 'Check connection or key permissions')}")
+                    st.error(f"Execution Failed: {response.get('remarks', 'Check connection or key permissions')}")
         else:
             st.warning(f"❌ DERIVATIVE SYSTEM LOCKED: {selected_symbol} is restricted to Spot Cash segment options only.")
