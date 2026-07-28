@@ -1,8 +1,8 @@
 import streamlit as st
 
 # Securely pull your client ID using the correct label string
-DHAN_CLIENT_ID = st.secrets["1100533176"]
-DHAN_ACCESS_TOKEN = st.secrets["aa70b48b-473a-464d-b133-361d953f87aa"]
+DHAN_CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
+DHAN_ACCESS_TOKEN = st.secrets["DHAN_ACCESS_TOKEN"]
 
 # Hardcoded threshold constraints
 MIN_DELIVERY_PCT = 40.0
