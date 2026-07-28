@@ -99,10 +99,10 @@ class TradingEngine:
 
         return {"symbol": symbol, "score": score, "route": route, "breakdown": scoring_results["breakdown"]}
 
-    def optimize_strike_with_targets(self, underlying_symbol: str, current_price: float, atr: float, force_mock: bool = False) -> dict:
+    def optimize_strike_with_targets(self, underlying_symbol: str, current_price: float, atr: float, force_mock: bool = False, target_delta: float = 0.5) -> dict:
         raw_chain = [] if force_mock else self.fetcher.fetch_option_chain(underlying_symbol)
         
-        # SMART FALLBACK SHIELD: Generates exact analytical simulations if server feed is blank
+        # SMART FALLBACK SHIELD: Generates exact analytical simulations if server feed is blank or force_mock is true
         if not raw_chain or len(raw_chain) == 0:
             mock_strike = round(current_price, -2)
             mock_premium = round(current_price * 0.02, 2)
