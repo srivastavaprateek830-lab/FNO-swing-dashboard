@@ -78,7 +78,7 @@ with r1_col2:
 st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
 
 # Lock target data row instantly
-row = master_database[master_database["Symbol"] == selected_symbol].iloc
+row = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
 
 # ==============================================================================
 # ROW 2: DETAILED ANALYSIS DESK (THE 3-COLUMN INTUITIVE MATRIX)
