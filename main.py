@@ -22,6 +22,11 @@ def get_engine():
 
 engine = get_engine()
 
+# --- SIDEBAR CONTROL PANEL SWITCH ---
+st.sidebar.header("🎛️ SYSTEM MODE CONTROLS")
+data_mode = st.sidebar.radio("Data Environment:", ("SIMULATION (Safe Mock Feed)", "LIVE MARKET (Dhan Connection)"))
+force_mock_payload = True if "SIMULATION" in data_mode else False
+
 # --- THEMATIC COMPREHENSIVE SECTOR DATABASE ---
 master_database = pd.DataFrame([
     {"Symbol": "TCS", "ID": "11536", "Sector": "Nifty IT", "FnO": True, "Price": 3800.0, "EMA20": 3850.0, "RSI": 42, "Vol": 800000, "AvgVol": 1000000, "PrevHigh": 3900.0, "IVR": 55, "OI_Chg": -1.2, "Price_Chg": -0.5, "DayMove": 15.0, "ATR": 55.0},
@@ -49,7 +54,6 @@ left_panel, right_panel = st.columns([2.3, 1])
 with left_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ Sectoral Stocks Thematic Board</div>", unsafe_allow_html=True)
-        
         sel_c1, sel_c2 = st.columns([1, 1.5])
         with sel_c1:
             selected_sector = st.selectbox("Filter Sector Theme:", sector_df["Sector"].unique(), label_visibility="collapsed")
@@ -57,43 +61,28 @@ with left_panel:
             st.markdown("<span style='font-size:11px;color:#888;'><i>💡 Click on any stock row check-box below to instantly auto-sync all downstream matrices!</i></span>", unsafe_allow_html=True)
             
         filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
-        
         compiled_rows = []
         for _, stock in filtered_watchlist.iterrows():
             metrics_payload = {
                 "close": stock["Price"], "ema_20": stock["EMA20"], "rsi": stock["RSI"],
                 "volume": stock["Vol"], "avg_volume": stock["AvgVol"], "prev_high": stock["PrevHigh"],
                 "nifty_trend": "BULLISH", "oi_change_pct": stock["OI_Chg"], "price_change_pct": stock["Price_Chg"],
-                "day_move": stock["DayMove"], "atr": stock["ATR"]
+                "day_move": stock["DayMove"], "atr": stock["ATR"], "delivery_pct": 45.0
             }
             analysis = engine.route_asset(stock["Symbol"], stock["ID"], stock["FnO"], metrics_payload)
             score = analysis["score"]
-            
             final_call = "🟢 BUY" if score >= 6 else ("⚪ NEUTRAL" if 4 <= score <= 5 else "🔴 SELL")
             
             compiled_rows.append({
                 "Ticker": stock["Symbol"], "LTP": f"₹{stock['Price']}", "RSI": int(stock["RSI"]),
-                "OI_CHG": f"{stock['OI_Chg']:+.1f}%",
-                "Supertrend": "🟩 PASS" if stock["Price"] > stock["EMA20"] else "🟥 FAIL",
-                "Trend": "PASS" if stock["Price"] > stock["EMA20"] else "FAIL",
-                "Momentum": "PASS" if stock["RSI"] > 50 else "FAIL",
-                "Volume": "PASS" if stock["Vol"] > stock["AvgVol"] else "FAIL",
-                "Del Strength": "PASS" if score >= 4 else "FAIL",
-                "Breakout": "YES" if stock["Price"] > stock["PrevHigh"] else "NO",
-                "Final Callout": final_call, "MTF": "YES" if score >= 4 else "NO", "FNO": "YES" if stock["FnO"] else "NO"
+                "OI_CHG": f"{stock['OI_Chg']:+.1f}%", "Supertrend": "🟩 PASS" if stock["Price"] > stock["EMA20"] else "🟥 FAIL",
+                "Trend": "PASS" if stock["Price"] > stock["EMA20"] else "FAIL", "Momentum": "PASS" if stock["RSI"] > 50 else "FAIL",
+                "Volume": "PASS" if stock["Vol"] > stock["AvgVol"] else "FAIL", "Del Strength": "PASS" if score >= 4 else "FAIL",
+                "Breakout": "YES" if stock["Price"] > stock["PrevHigh"] else "NO", "Final Callout": final_call, "MTF": "YES" if score >= 4 else "NO", "FNO": "YES" if stock["FnO"] else "NO"
             })
             
         df_display = pd.DataFrame(compiled_rows)
-        
-        # ACTIVATE INTERACTIVE ROW SELECTION: Enables click detection in the table grid
-        selected_row_data = st.dataframe(
-            df_display, 
-            use_container_width=True, 
-            hide_index=True, 
-            height=180,
-            on_select="rerun",
-            selection_mode="single-row"
-        )
+        selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
 
 with right_panel:
     with st.container(border=True):
@@ -102,29 +91,21 @@ with right_panel:
         
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
-        
-        # COMPUTE DYNAMIC INTERACTIVE SYNC: Determines chosen stock index
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
-        
-        # Check if the user has clicked on a specific row checkbox
         if len(selected_row_data.selection.rows) > 0:
             default_index = int(selected_row_data.selection.rows[0])
-            
-        selected_symbol = st.selectbox(
-            "Choose Target Asset:", 
-            stock_options, 
-            index=default_index,
-            label_visibility="collapsed"
-        )
+        selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# Pull targeted active record row seamlessly
 target_stock = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
-
-# Compute underlying strategy variables via engine rules
+# Pass selection state properties directly to backend execution paths
 strike_details = engine.optimize_strike_with_targets(
-    underlying_symbol=selected_symbol, current_price=float(target_stock["Price"]), atr=float(target_stock["ATR"]), target_delta=0.50
+    underlying_symbol=str(target_stock["ID"]),
+    current_price=float(target_stock["Price"]),
+    atr=float(target_stock["ATR"]),
+    force_mock=force_mock_payload
 )
+
 # ==============================================================================
 # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
 # ==============================================================================
@@ -134,36 +115,26 @@ mtf_box, fno_box = st.columns(2)
 with mtf_box:
     with st.container(border=True):
         st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-        
         mtf_matrix_row = [{
-            "Asset": target_stock["Symbol"],
-            "Spot Entry": f"₹ {target_stock['Price']}",
-            "Spot SL (1.5x ATR)": f"₹ {strike_details['spot_sl']}",
-            "Spot TP (3.0x ATR)": f"₹ {strike_details['spot_tp']}",
-            "MTF Max Funding": "Up to 4x Leverage",
-            "Initial Margin (25%)": f"₹ {float(target_stock['Price']) * 0.25:.1f}",
+            "Asset": target_stock["Symbol"], "Spot Entry": f"₹ {target_stock['Price']}",
+            "Spot SL (1.5x ATR)": f"₹ {strike_details['spot_sl']}", "Spot TP (3.0x ATR)": f"₹ {strike_details['spot_tp']}",
+            "MTF Max Funding": "Up to 4x Leverage", "Initial Margin (25%)": f"₹ {float(target_stock['Price']) * 0.25:.1f}",
             "Position State": "ARMED FOR SPOT BUY"
         }]
         st.dataframe(pd.DataFrame(mtf_matrix_row), use_container_width=True, hide_index=True)
-        
         if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
             st.success(f"MTF Equity Leverage Router Payload Engaged for {selected_symbol}.")
 
 with fno_box:
     with st.container(border=True):
         st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-        
         if target_stock["FnO"]:
             fno_matrix_row = [{
-                "Option Strike": f"{strike_details['strike']} {strike_details['type']}",
-                "Entry Premium": f"₹ {strike_details['current_premium']}",
-                "Premium SL": f"₹ {strike_details['premium_sl']}",
-                "Premium TP1": f"₹ {strike_details['premium_tp']:.2f}",
-                "Premium TP2": f"₹ {(strike_details['premium_tp'] * 1.25):.2f}",
-                "Premium TP3": f"₹ {(strike_details['premium_tp'] * 1.50):.2f}"
+                "Option Strike": f"{strike_details['strike']} {strike_details['type']}", "Entry Premium": f"₹ {strike_details['current_premium']}",
+                "Premium SL": f"₹ {strike_details['premium_sl']}", "Premium TP1": f"₹ {strike_details['premium_tp']:.2f}",
+                "Premium TP2": f"₹ {(strike_details['premium_tp'] * 1.25):.2f}", "Premium TP3": f"₹ {(strike_details['premium_tp'] * 1.50):.2f}"
             }]
             st.dataframe(pd.DataFrame(fno_matrix_row), use_container_width=True, hide_index=True)
-            
             if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
                 st.balloons()
                 st.success(f"Options Order Payload Routed Successfully for {selected_symbol}.")
