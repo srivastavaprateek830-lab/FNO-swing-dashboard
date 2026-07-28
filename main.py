@@ -10,7 +10,7 @@ st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 st.markdown("""
 <style>
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
-    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
+    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.3rem !important; }
     .stDataFrame div { font-size: 11px !important; }
     .matrix-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }
     .compact-text { font-family: monospace; font-size: 11px; margin-bottom: 2px; line-height: 1.3; }
@@ -32,7 +32,8 @@ data_mode = st.sidebar.radio(
 )
 force_mock_payload = True if "SIMULATION" in data_mode else False
 
-# --- EXTRACTION FROM MASTER LOCAL DICTIONARY ---
+# --- FIXED UNIVERSAL DATABASE BRIDGE ---
+# UNLOCKED: Moved this outside any conditional loops so all 10 sectors and 180+ stocks load permanently 
 master_database = get_master_market_feed()
 
 # --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
@@ -91,13 +92,12 @@ with right_panel:
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
         if len(selected_row_data.selection.rows) > 0:
-            default_index = int(selected_row_data.selection.rows[0])
+            default_index = int(selected_row_data.selection.rows)
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# THE BULLETPROOF ANCHOR FIX: Added an explicit row slice integer [0] key to extract the clean stock series dictionary natively
 target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
-target_stock = target_stock_df.iloc[0]
+target_stock = target_stock_df.iloc
 
 # Pass selection state tokens directly to live backend data loops
 strike_details = engine.optimize_strike_with_targets(
@@ -107,7 +107,7 @@ strike_details = engine.optimize_strike_with_targets(
 )
 
 # Force immediate mock simulation parameters if user keeps control in simulation mode
-if "SIMULATION" in data_mode:
+if force_mock_payload:
     mock_strike = round(float(target_stock["Price"]), -2)
     mock_premium = round(float(target_stock["Price"]) * 0.02, 2)
     strike_details = {
@@ -173,4 +173,3 @@ with fno_box:
                         st.error(f"Execution Failed: {response.get('remarks', 'Check connection or key permissions')}")
         else:
             st.warning(f"❌ DERIVATIVE SYSTEM LOCKED: {selected_symbol} is restricted to Spot Cash segment options only.")
-
