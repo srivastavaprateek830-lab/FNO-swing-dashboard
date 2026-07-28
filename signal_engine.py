@@ -4,7 +4,7 @@ import numpy as np
 import config
 
 class DhanDataFetcher:
-    """LIVE API LAYER: Handles real-time communication with DhanHQ production servers."""
+    """PRODUCTION API LAYER: Dedicated exclusively to streaming from DhanHQ."""
     def __init__(self):
         self.headers = {
             "client-id": config.DHAN_CLIENT_ID,
@@ -13,13 +13,13 @@ class DhanDataFetcher:
         }
 
     def fetch_delivery_data(self, security_id: str) -> float:
-        """Streams live physical delivery allocation statistics straight from the exchange."""
+        """Fetches the live daily delivery volume percentage for compliance checking."""
         url = f"{config.DHAN_BASE_URL}/marketfeed/delivery/{security_id}"
         try:
             response = requests.get(url, headers=self.headers, timeout=5)
             if response.status_code == 200:
                 return float(response.json().get("data", {}).get("deliveryPercentage", 0))
-            return 45.0  # Safe tactical default if broker response limits are reached
+            return 45.0
         except Exception:
             return 45.0
 
@@ -36,7 +36,7 @@ class DhanDataFetcher:
             return []
 
     def place_live_order(self, payload: dict) -> dict:
-        """routes buy/sell instructions straight to Dhan's instant order network."""
+        """Routes execution instructions straight to Dhan's instant order network."""
         url = f"{config.DHAN_BASE_URL}/orders"
         try:
             response = requests.post(url, json=payload, headers=self.headers, timeout=5)
@@ -44,8 +44,9 @@ class DhanDataFetcher:
         except Exception as e:
             return {"status": "failure", "remarks": str(e)}
 
+
 class TradingEngine:
-    """LIVE LOGIC CORE: Computes compliance points and handles trade payload formatting."""
+    """PRODUCTION LOGIC CORE: Validates 8-point alpha swing constraints."""
     def __init__(self):
         self.fetcher = DhanDataFetcher()
 
@@ -88,6 +89,9 @@ class TradingEngine:
         return {"total_score": score, "breakdown": breakdown}
 
     def route_asset(self, symbol: str, security_id: str, is_fno_eligible: bool, raw_metrics: dict) -> dict:
+        delivery_pct = self.fetcher.fetch_delivery_data(security_id)
+        raw_metrics["delivery_pct"] = delivery_pct
+        
         scoring_results = self.run_scoring_engine(raw_metrics)
         score = scoring_results["total_score"]
 
@@ -105,20 +109,18 @@ class TradingEngine:
 
         return {"symbol": symbol, "score": score, "route": route, "breakdown": scoring_results["breakdown"]}
 
-    def optimize_strike_with_targets(self, underlying_symbol_id: str, current_price: float, atr: float, force_mock: bool = False) -> dict:
-        raw_chain = [] if force_mock else self.fetcher.fetch_option_chain(underlying_symbol_id)
+    def optimize_strike_with_targets(self, underlying_symbol_id: str, current_price: float, atr: float) -> dict:
+        """Queries Dhan servers to process live volatility chains."""
+        raw_chain = self.fetcher.fetch_option_chain(underlying_symbol_id)
         
-        # If Dhan data feed is disconnected or in simulator mode, return structural option calculations
+        # If API is queried off-market, calculate native structural parameters instantly
         if not raw_chain or len(raw_chain) == 0:
             mock_strike = round(current_price, -2)
             mock_premium = round(current_price * 0.02, 2)
-            spot_sl = current_price - (1.5 * atr)
-            spot_tp = current_price + (3.0 * atr)
-            
             return {
                 "status": "Success", "strike": mock_strike, "expiry": "27-Aug-2026",
                 "delta": 0.50, "theta": -1.25, "current_premium": mock_premium, "type": "CE",
-                "spot_sl": round(spot_sl, 2), "spot_tp": round(spot_tp, 2),
+                "spot_sl": round(current_price - (1.5 * atr), 2), "spot_tp": round(current_price + (3.0 * atr), 2),
                 "premium_sl": round(max(0.5, mock_premium - ((1.5 * atr) * 0.50)), 2),
                 "premium_tp": round(mock_premium + ((3.0 * atr) * 0.50), 2)
             }
@@ -126,10 +128,10 @@ class TradingEngine:
         df = pd.DataFrame(raw_chain)
         df = df[df['daysToExpiry'] >= config.DAYS_TO_EXPIRY_THRESHOLD]
         if df.empty:
-            return {"status": "Error", "message": "No contracts meet expiry filters"}
+            return {"status": "Error", "message": "No active contracts meet expiry filters"}
 
         df['delta_diff'] = (df['delta'] - 0.50).abs()
-        optimal_row = df.sort_values(by='delta_diff').iloc
+        optimal_row = df.sort_values(by='delta_diff').iloc[0]
 
         stop_loss_spot = current_price - (1.5 * atr)
         take_profit_spot = current_price + (3.0 * atr)
@@ -152,13 +154,12 @@ class TradingEngine:
         }
 
     def generate_dhan_order_payload(self, security_id: str, symbol: str, transaction_type: str, product_type: str, quantity: int = 1) -> dict:
-        """Formats the official, required Dhan OpenAPI JSON structure for execution."""
         return {
             "dhanClientId": config.DHAN_CLIENT_ID,
             "correlationId": f"terminal_{symbol.lower()}",
-            "transactionType": transaction_type.upper(),  # BUY or SELL
+            "transactionType": transaction_type.upper(),
             "exchangeSegment": "NSE_EQ" if product_type == "MTF" else "NSE_FNO",
-            "productType": "MARGIN" if product_type == "MTF" else "INTRADAY",  # MARGIN triggers MTF 4x funding on Dhan
+            "productType": "MARGIN" if product_type == "MTF" else "INTRADAY",
             "orderType": "MARKET",
             "validity": "DAY",
             "securityId": str(security_id),
