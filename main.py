@@ -99,7 +99,7 @@ with right_panel:
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# SYSTEM ALIGNMENT ADJUSTMENT: Explicit text matcher isolating the specific record matching our screen dropdown directly
+# FIXED BULLETPROOF ANCHOR: Added explicit [0] index selector to convert lookup record to clear data properties
 target_stock = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True).iloc[0]
 # Pass selection state properties directly to backend execution paths securely
 strike_details = engine.optimize_strike_with_targets(
