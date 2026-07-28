@@ -59,13 +59,13 @@ st.header("🎯 Volatility-Based Strike & Premium Target Projections")
 
 if row["FnO"]:
     if st.button(f"Execute Options Matrix Calculation For: {selected_symbol}"):
-        with st.spinner("Parsing active option chains and processing volatility bands..."):
+               with st.spinner("Parsing active option chains and processing volatility bands..."):
             
             # Fetch live structural projections using calculated metrics
             strike_details = engine.optimize_strike_with_targets(
                 underlying_symbol=selected_symbol,
-                current_price=row["Price"],
-                atr=row["ATR"],
+                current_price=float(row["Price"]),
+                atr=float(row["ATR"]),
                 target_delta=0.50
             )
             
@@ -76,7 +76,7 @@ if row["FnO"]:
                     st.metric("Current Entry Premium", f"₹ {strike_details['current_premium']}")
                 with c2:
                     st.metric("Underlying Spot Stop-Loss", f"₹ {strike_details['spot_sl']}")
-                    st.metric("Target Option Premium SL", f"₹ {strike_details['premium_sl']}", delta_color="inverse")
+                    st.metric("Target Option Premium SL", f"₹ {strike_details['premium_sl']}")
                 with c3:
                     st.metric("Underlying Spot Take-Profit", f"₹ {strike_details['spot_tp']}")
                     st.metric("Target Option Premium TP", f"₹ {strike_details['premium_tp']}")
@@ -86,3 +86,4 @@ if row["FnO"]:
                 st.error(f"Strategy Compilation Failed: {strike_details.get('message')}")
 else:
     st.warning("Selected asset is not configured for F&O contracts. Option strike projections deactivated.")
+
