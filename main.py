@@ -2,16 +2,17 @@ import streamlit as st
 import pandas as pd
 from signal_engine import TradingEngine
 
-st.set_page_config(page_title="Compact Market Terminal", layout="wide")
+st.set_page_config(page_title="Institutional Swing Terminal", layout="wide")
 
-# Inject aggressive CSS overrides to shrink excessive padding and maximize screen real estate
+# Institutional Theme Styling Layer: Restricts row inflation and enforces compact typography
 st.markdown("""
 <style>
-    .block-container { padding-top: 1rem !important; padding-bottom: 0rem !important; padding-left: 2rem !important; padding-right: 2rem !important; }
-    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.4rem !important; }
+    .block-container { padding-top: 1rem !important; padding-bottom: 0rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
+    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .stDataFrame div { font-size: 12px !important; }
-    .compact-text { font-family: monospace; font-size: 12px; margin-bottom: 2px; }
-    h3, h4 { margin-top: 0rem !important; margin-bottom: 0.3rem !important; padding: 0rem !important; }
+    .compact-text { font-family: monospace; font-size: 11px; margin-bottom: 2px; line-height: 1.3; }
+    h3, h4 { margin-top: 0rem !important; margin-bottom: 0.2rem !important; padding: 0rem !important; font-size: 14px !important; font-weight: bold !important; color: #E2E8F0 !important; }
+    .stAlert { padding: 5px !important; margin-top: 5px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -21,7 +22,7 @@ def get_engine():
 
 engine = get_engine()
 
-# --- HIGH-DENSITY MASTER DATABASE ---
+# --- INSTALMENT TRACKING DATABASE ---
 master_database = pd.DataFrame([
     {"Symbol": "HDFC BANK", "ID": "1333", "Sector": "Banking & Financials", "FnO": True, "Price": 1650.0, "EMA20": 1620.0, "RSI": 58, "Vol": 8200000, "AvgVol": 5000000, "PrevHigh": 1640.0, "IVR": 22, "OI_Chg": 4.1, "Price_Chg": 1.2, "DayMove": 18.0, "ATR": 22.0},
     {"Symbol": "ICICI BANK", "ID": "11483", "Sector": "Banking & Financials", "FnO": True, "Price": 1120.0, "EMA20": 1100.0, "RSI": 62, "Vol": 6500000, "AvgVol": 4000000, "PrevHigh": 1115.0, "IVR": 18, "OI_Chg": 3.8, "Price_Chg": 0.9, "DayMove": 12.0, "ATR": 15.0},
@@ -33,30 +34,62 @@ master_database = pd.DataFrame([
     {"Symbol": "ZOMATO", "ID": "5097", "Sector": "Consumer Internet", "FnO": False, "Price": 160.0, "EMA20": 145.0, "RSI": 65, "Vol": 15000000, "AvgVol": 8000000, "PrevHigh": 155.0, "IVR": 0, "OI_Chg": 0.0, "Price_Chg": 3.4, "DayMove": 4.0, "ATR": 5.0}
 ])
 
-# --- TOP GLOBAL METRIC HEADER ROW ---
-hc1, hc2, hc3, hc4 = st.columns([1.2, 1, 1, 1])
+# --- DYNAMIC SECTOR MOMENTUM ENGINE ---
+sector_stats = []
+for sector, group in master_database.groupby("Sector"):
+    bullish_stocks = group[(group["RSI"] > 50) & (group["Price"] > group["EMA20"])]
+    bullish_score = len(bullish_stocks) / len(group) * 100
+    avg_price_gain = group["Price_Chg"].mean()
+    sector_stats.append({"Sector": sector, "Strength": f"🔥 {bullish_score:.0f}% BULLISH", "Avg Gain": f"{avg_price_gain:+.2f}%", "_score": bullish_score})
+
+sector_df = pd.DataFrame(sector_stats).sort_values(by="_score", ascending=False)
+
+# --- GLOBAL BRANDING HEADER STRIP ---
+hc1, hc2, hc3 = st.columns([2, 1, 1])
 with hc1:
-    st.markdown("⚡ **LIVE MARKET TERMINAL**")
+    st.markdown("### ⚡ LIVE THEMATIC TRADING TERMINAL")
 with hc2:
-    st.markdown("Index: <span style='color:#00FF00;font-weight:bold;'>NIFTY BULLISH</span>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align:right;font-size:12px;color:#888;'>Index: <b style='color:#00FF00;'>NIFTY 50 BULLISH</b></div>", unsafe_allow_html=True)
 with hc3:
-    st.markdown("Volatility: <span style='color:#FF9900;font-weight:bold;'>ATR NORMAL</span>", unsafe_allow_html=True)
-with hc4:
-    selected_symbol = st.selectbox("🎯 TARGET:", master_database["Symbol"], label_visibility="collapsed")
+    st.markdown("<div style='text-align:right;font-size:12px;color:#888;'>Volatility: <b style='color:#FF9900;'>ATR NORMAL</b></div>", unsafe_allow_html=True)
 
-st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.5rem;'>", unsafe_allow_html=True)
+st.markdown("<hr style='margin-top:0.1rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
 
-# Lock row target record seamlessly
-row = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
+# ==============================================================================
+# ROW 1: SECTOR HEATMAP & RADAR CONTROLS (BALANCED HORIZONTAL SPREAD)
+# ==============================================================================
+r1_col1, r1_col2 = st.columns([1.2, 1])
 
-# --- THE 3-COLUMN ULTRA-COMPACT GRID LAYOUT ---
+with r1_col1:
+    with st.container(border=True):
+        st.markdown("#### 🔥 Industry Sector Rotation Matrix")
+        st.dataframe(sector_df[["Sector", "Strength", "Avg Gain"]], use_container_width=True, hide_index=True, height=120)
+
+with r1_col2:
+    with st.container(border=True):
+        st.markdown("#### 🎛️ Terminal Interactive Radar")
+        # Sector drop box filters data
+        selected_sector = st.selectbox("1. Filter Watchlist by Sector Theme:", sector_df["Sector"].unique())
+        filtered_watchlist = master_database[master_database["Sector"] == selected_sector]
+        
+        # Stock dropdown updates based on the selected sector
+        selected_symbol = st.selectbox("2. Select Active Target Asset:", filtered_watchlist["Symbol"])
+
+st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
+
+# Lock target data row instantly
+row = master_database[master_database["Symbol"] == selected_symbol].iloc
+
+# ==============================================================================
+# ROW 2: DETAILED ANALYSIS DESK (THE 3-COLUMN INTUITIVE MATRIX)
+# ==============================================================================
 col1, col2, col3 = st.columns([1, 1.1, 1.2])
 
 with col1:
     with st.container(border=True):
-        st.markdown("#### 📋 Core Watchlist Feed")
-        styled_table = master_database.copy()
-        st.dataframe(master_database[["Symbol", "Price", "RSI", "OI_Chg"]], use_container_width=True, hide_index=True, height=290)
+        st.markdown(f"#### 📋 Feed: {selected_sector}")
+        # Displays the stock list filtered by your selected sector
+        st.dataframe(filtered_watchlist[["Symbol", "Price", "RSI", "OI_Chg"]], use_container_width=True, hide_index=True, height=220)
 
 with col2:
     with st.container(border=True):
@@ -71,12 +104,11 @@ with col2:
         
         analysis = engine.route_asset(row["Symbol"], row["ID"], row["FnO"], metrics_payload)
         
-        # Display dense routing results immediately
         score_color = "green" if analysis["score"] >= 6 else ("orange" if 4 <= analysis["score"] <= 5 else "red")
         st.markdown(f"**Score:** :{score_color}[**{analysis['score']}/8**] | **Route:** `{analysis['route'][:20]}...`")
-        st.markdown("<hr style='margin:0.2rem;'>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:0.15rem;'>", unsafe_allow_html=True)
         
-        # Split items into a ultra-compact list to preserve vertical rows
+        # Highly optimized checklist layout with zero vertical bloating
         for key, val in analysis["breakdown"].items():
             color = "🟢" if "PASS" in str(val) or "BULLISH" in str(val) or "SAFE" in str(val) or "%" in str(val) or "LONG" in str(val) else "🔴"
             st.markdown(f"<div class='compact-text'>{color} {key[3:]}: <b>{val}</b></div>", unsafe_allow_html=True)
@@ -90,9 +122,8 @@ with col3:
                 underlying_symbol=selected_symbol, current_price=float(row["Price"]), atr=float(row["ATR"]), target_delta=0.50
             )
             
-            # Use small tabular horizontal structures instead of huge spatial components
             st.markdown(f"**Target Lock:** <span style='color:#00FF00;font-weight:bold;'>{strike_details['strike']} {strike_details['type']} ({strike_details['expiry']})</span>", unsafe_allow_html=True)
-            st.markdown("<hr style='margin:0.2rem;'>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin:0.15rem;'>", unsafe_allow_html=True)
             
             rc1, rc2 = st.columns(2)
             with rc1:
@@ -104,7 +135,7 @@ with col3:
                 st.markdown(f"<div class='compact-text'>▶ Spot TP: <b>₹{strike_details['spot_tp']}</b></div>", unsafe_allow_html=True)
                 st.markdown(f"<div class='compact-text'>▶ Premium TP: <span style='color:#00FF00;'><b>₹{strike_details['premium_tp']}</b></span></div>", unsafe_allow_html=True)
                 
-            st.markdown("<hr style='margin:0.2rem;'>", unsafe_allow_html=True)
+            st.markdown("<hr style='margin:0.15rem;'>", unsafe_allow_html=True)
             st.success("🎯 Order Router Armed.")
         else:
             st.warning("⚠️ CASH SEGMENT ONLY: Derivative targeting modules locked for this asset.")
