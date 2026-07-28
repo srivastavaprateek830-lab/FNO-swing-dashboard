@@ -99,8 +99,8 @@ with right_panel:
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# FIXED ROW FINDER: Added direct integer bracket identifier [0] to extract target data strings cleanly
-target_stock = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
+# SYSTEM ALIGNMENT ADJUSTMENT: Explicit text matcher isolating the specific record matching our screen dropdown directly
+target_stock = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True).iloc[0]
 # Pass selection state properties directly to backend execution paths securely
 strike_details = engine.optimize_strike_with_targets(
     underlying_symbol=str(target_stock["ID"]),
