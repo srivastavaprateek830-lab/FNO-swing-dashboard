@@ -54,9 +54,9 @@ with left_panel:
         with sel_c1:
             selected_sector = st.selectbox("Filter Sector Theme:", sector_df["Sector"].unique(), label_visibility="collapsed")
         with sel_c2:
-            st.markdown("<span style='font-size:11px;color:#888;'><i>Ex - Selecting a theme re-populates the rows. Use dropdown on the right to switch targets.</i></span>", unsafe_allow_html=True)
+            st.markdown("<span style='font-size:11px;color:#888;'><i>💡 Click on any stock row check-box below to instantly auto-sync all downstream matrices!</i></span>", unsafe_allow_html=True)
             
-        filtered_watchlist = master_database[master_database["Sector"] == selected_sector]
+        filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
         
         compiled_rows = []
         for _, stock in filtered_watchlist.iterrows():
@@ -83,7 +83,17 @@ with left_panel:
                 "Final Callout": final_call, "MTF": "YES" if score >= 4 else "NO", "FNO": "YES" if stock["FnO"] else "NO"
             })
             
-        st.dataframe(pd.DataFrame(compiled_rows), use_container_width=True, hide_index=True, height=180)
+        df_display = pd.DataFrame(compiled_rows)
+        
+        # ACTIVATE INTERACTIVE ROW SELECTION: Enables click detection in the table grid
+        selected_row_data = st.dataframe(
+            df_display, 
+            use_container_width=True, 
+            hide_index=True, 
+            height=180,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
 
 with right_panel:
     with st.container(border=True):
@@ -93,9 +103,20 @@ with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
         
-        # FIX 1: Active Token automatically syncs down to match the list selection options
+        # COMPUTE DYNAMIC INTERACTIVE SYNC: Determines chosen stock index
         stock_options = filtered_watchlist["Symbol"].tolist()
-        selected_symbol = st.selectbox("Choose Target Asset:", stock_options, label_visibility="collapsed")
+        default_index = 0
+        
+        # Check if the user has clicked on a specific row checkbox
+        if len(selected_row_data.selection.rows) > 0:
+            default_index = int(selected_row_data.selection.rows[0])
+            
+        selected_symbol = st.selectbox(
+            "Choose Target Asset:", 
+            stock_options, 
+            index=default_index,
+            label_visibility="collapsed"
+        )
 
 # Pull targeted active record row seamlessly
 target_stock = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
@@ -104,9 +125,8 @@ target_stock = master_database[master_database["Symbol"] == selected_symbol].ilo
 strike_details = engine.optimize_strike_with_targets(
     underlying_symbol=selected_symbol, current_price=float(target_stock["Price"]), atr=float(target_stock["ATR"]), target_delta=0.50
 )
-
 # ==============================================================================
-# FIX 2: ROW 2 DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
+# ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
 # ==============================================================================
 st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
 mtf_box, fno_box = st.columns(2)
