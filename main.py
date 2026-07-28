@@ -10,7 +10,7 @@ st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 st.markdown("""
 <style>
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
-    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.3rem !important; }
+    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .stDataFrame div { font-size: 11px !important; }
     .matrix-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }
     .compact-text { font-family: monospace; font-size: 11px; margin-bottom: 2px; line-height: 1.3; }
@@ -25,8 +25,6 @@ engine = get_engine()
 
 # --- SIDEBAR CONTROL PANEL SWITCH ---
 st.sidebar.header("🎛️ SYSTEM MODE CONTROLS")
-
-# MEMORY LOCK FIX: Added an explicit persistent session state key so your choice never flips back on table clicks
 data_mode = st.sidebar.radio(
     "Data Environment:", 
     ("SIMULATION (Safe Mock Feed)", "LIVE MARKET (Dhan Connection)"),
@@ -93,20 +91,33 @@ with right_panel:
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
         if len(selected_row_data.selection.rows) > 0:
-            default_index = int(selected_row_data.selection.rows)
+            default_index = int(selected_row_data.selection.rows[0])
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
+# THE BULLETPROOF ANCHOR FIX: Added an explicit row slice integer [0] key to extract the clean stock series dictionary natively
 target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
-target_stock = target_stock_df.iloc
+target_stock = target_stock_df.iloc[0]
 
-# Pass selection state properties directly to backend execution paths securely
+# Pass selection state tokens directly to live backend data loops
 strike_details = engine.optimize_strike_with_targets(
     underlying_symbol_id=str(target_stock["ID"]),
     current_price=float(target_stock["Price"]),
-    atr=float(target_stock["ATR"]),
-    force_mock=force_mock_payload
+    atr=float(target_stock["ATR"])
 )
+
+# Force immediate mock simulation parameters if user keeps control in simulation mode
+if "SIMULATION" in data_mode:
+    mock_strike = round(float(target_stock["Price"]), -2)
+    mock_premium = round(float(target_stock["Price"]) * 0.02, 2)
+    strike_details = {
+        "status": "Success", "strike": mock_strike, "expiry": "27-Aug-2026",
+        "delta": 0.50, "theta": -1.25, "current_premium": mock_premium, "type": "CE",
+        "spot_sl": round(float(target_stock["Price"]) - (1.5 * float(target_stock["ATR"])), 2), 
+        "spot_tp": round(float(target_stock["Price"]) + (3.0 * float(target_stock["ATR"])), 2),
+        "premium_sl": round(max(0.5, mock_premium - ((1.5 * float(target_stock["ATR"])) * 0.50)), 2),
+        "premium_tp": round(mock_premium + ((3.0 * float(target_stock["ATR"])) * 0.50), 2)
+    }
 
 # ==============================================================================
 # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
@@ -162,3 +173,4 @@ with fno_box:
                         st.error(f"Execution Failed: {response.get('remarks', 'Check connection or key permissions')}")
         else:
             st.warning(f"❌ DERIVATIVE SYSTEM LOCKED: {selected_symbol} is restricted to Spot Cash segment options only.")
+
