@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit st
 import pandas as pd
 from signal_engine import TradingEngine
 
@@ -25,7 +25,6 @@ engine = get_engine()
 # --- SIDEBAR CONTROL PANEL SWITCH ---
 st.sidebar.header("🎛️ SYSTEM MODE CONTROLS")
 data_mode = st.sidebar.radio("Data Environment:", ("SIMULATION (Safe Mock Feed)", "LIVE MARKET (Dhan Connection)"))
-force_mock_payload = True if "SIMULATION" in data_mode else False
 
 # --- THEMATIC COMPREHENSIVE SECTOR DATABASE ---
 master_database = pd.DataFrame([
@@ -99,15 +98,28 @@ with right_panel:
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# THE PERMANENT FIX: Added missing [0] bracket slice to pull the row record cleanly instead of a series method pointer
-target_stock = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True).iloc[0]
-# Pass selection state properties directly to backend execution paths securely
+# Safe single-row extraction wrapper
+target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
+target_stock = target_stock_df.iloc[0]
+# Pass selection state properties directly to backend execution paths securely (removed force_mock argument)
 strike_details = engine.optimize_strike_with_targets(
     underlying_symbol=str(target_stock["ID"]),
     current_price=float(target_stock["Price"]),
-    atr=float(target_stock["ATR"]),
-    force_mock=force_mock_payload
+    atr=float(target_stock["ATR"])
 )
+
+# If user turns on SIMULATION mode, force the targets array to present structural mock metrics directly in the layout
+if "SIMULATION" in data_mode:
+    mock_strike = round(float(target_stock["Price"]), -2)
+    mock_premium = round(float(target_stock["Price"]) * 0.02, 2)
+    strike_details = {
+        "status": "Success", "strike": mock_strike, "expiry": "27-Aug-2026",
+        "delta": 0.50, "theta": -1.25, "current_premium": mock_premium, "type": "CE",
+        "spot_sl": round(float(target_stock["Price"]) - (1.5 * float(target_stock["ATR"])), 2), 
+        "spot_tp": round(float(target_stock["Price"]) + (3.0 * float(target_stock["ATR"])), 2),
+        "premium_sl": round(max(0.5, mock_premium - ((1.5 * float(target_stock["ATR"])) * 0.50)), 2),
+        "premium_tp": round(mock_premium + ((3.0 * float(target_stock["ATR"])) * 0.50), 2)
+    }
 
 # ==============================================================================
 # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
