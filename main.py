@@ -15,7 +15,7 @@ st.title("⚡ F&O and MTF Swing Analytics Trading Terminal")
 st.caption("Connected to DhanHQ API Data Feed")
 st.markdown("---")
 
-col1, col2 = st.columns()
+col1, col2 = st.columns(2)
 
 with col1:
     st.header("📋 Watchlist Core Feed")
