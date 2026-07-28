@@ -57,7 +57,7 @@ with col2:
     with st.container(border=True):
         st.markdown("#### 📊 8-Point Scoring & Routing Engine")
         
-        row = master_database[master_database["Symbol"] == selected_symbol].iloc
+        row = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
         metrics_payload = {
             "close": row["Price"], "ema_20": row["EMA20"], "rsi": row["RSI"],
             "volume": row["Vol"], "avg_volume": row["AvgVol"], "prev_high": row["PrevHigh"],
