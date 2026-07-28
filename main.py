@@ -3,13 +3,14 @@ import pandas as pd
 from signal_engine import TradingEngine
 from securities_db import get_master_market_feed
 
-# Enforce professional wide-screen terminal view padding
+# Force application container to use standard compact width limits
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
+# Institutional Spacing Minimization Layer
 st.markdown("""
 <style>
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
-    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
+    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.3rem !important; }
     .stDataFrame div { font-size: 11px !important; }
     .matrix-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }
     .compact-text { font-family: monospace; font-size: 11px; margin-bottom: 2px; line-height: 1.3; }
@@ -24,7 +25,13 @@ engine = get_engine()
 
 # --- SIDEBAR CONTROL PANEL SWITCH ---
 st.sidebar.header("🎛️ SYSTEM MODE CONTROLS")
-data_mode = st.sidebar.radio("Data Environment:", ("SIMULATION (Safe Mock Feed)", "LIVE MARKET (Dhan Connection)"))
+
+# MEMORY LOCK FIX: Added an explicit persistent session state key so your choice never flips back on table clicks
+data_mode = st.sidebar.radio(
+    "Data Environment:", 
+    ("SIMULATION (Safe Mock Feed)", "LIVE MARKET (Dhan Connection)"),
+    key="active_data_mode"
+)
 force_mock_payload = True if "SIMULATION" in data_mode else False
 
 # --- EXTRACTION FROM MASTER LOCAL DICTIONARY ---
@@ -74,7 +81,7 @@ with left_panel:
             })
             
         df_display = pd.DataFrame(compiled_rows)
-        selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+        selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
 
 with right_panel:
     with st.container(border=True):
@@ -86,14 +93,14 @@ with right_panel:
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
         if len(selected_row_data.selection.rows) > 0:
-            default_index = int(selected_row_data.selection.rows[0])
+            default_index = int(selected_row_data.selection.rows)
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
 target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
-target_stock = target_stock_df.iloc[0]
+target_stock = target_stock_df.iloc
 
-# Pass selection state tokens directly to live backend data loops
+# Pass selection state properties directly to backend execution paths securely
 strike_details = engine.optimize_strike_with_targets(
     underlying_symbol_id=str(target_stock["ID"]),
     current_price=float(target_stock["Price"]),
@@ -122,7 +129,6 @@ with mtf_box:
             if force_mock_payload:
                 st.success(f"[SIMULATION MODE] MTF Order payload verified for {selected_symbol}.")
             else:
-                # Compile official live payload structure and push to Dhan's production pipeline
                 payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "MTF")
                 response = engine.fetcher.place_live_order(payload)
                 if "orderStatus" in str(response) or "SUCCESS" in str(response).upper():
@@ -147,7 +153,6 @@ with fno_box:
                     st.balloons()
                     st.success(f"[SIMULATION MODE] Options Order routing payload verified for {selected_symbol}.")
                 else:
-                    # Construct and push active derivatives buy payload out to the live exchange
                     payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "FNO")
                     response = engine.fetcher.place_live_order(payload)
                     if "orderStatus" in str(response) or "SUCCESS" in str(response).upper():
