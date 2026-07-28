@@ -94,12 +94,12 @@ with right_panel:
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
         
-        # FIXED: Extract first integer index out of the list layout to prevent TypeErrors
         if len(selected_row_data.selection.rows) > 0:
             default_index = int(selected_row_data.selection.rows[0])
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
+# FIXED ROW FINDER: Added direct integer bracket identifier [0] to extract target data strings cleanly
 target_stock = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
 # Pass selection state properties directly to backend execution paths securely
 strike_details = engine.optimize_strike_with_targets(
