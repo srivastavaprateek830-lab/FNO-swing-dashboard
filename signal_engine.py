@@ -99,10 +99,11 @@ class TradingEngine:
 
         return {"symbol": symbol, "score": score, "route": route, "breakdown": scoring_results["breakdown"]}
 
-    def optimize_strike_with_targets(self, underlying_symbol: str, current_price: float, atr: float, force_mock: bool = False, target_delta: float = 0.5) -> dict:
-        raw_chain = [] if force_mock else self.fetcher.fetch_option_chain(underlying_symbol)
+    def optimize_strike_with_targets(self, underlying_symbol: str, current_price: float, atr: float) -> dict:
+        """Standard production target picker function (no force_mock argument needed)."""
+        raw_chain = self.fetcher.fetch_option_chain(underlying_symbol)
         
-        # SMART FALLBACK SHIELD: Generates exact analytical simulations if server feed is blank or force_mock is true
+        # If live API yields nothing, return structural math results instantly
         if not raw_chain or len(raw_chain) == 0:
             mock_strike = round(current_price, -2)
             mock_premium = round(current_price * 0.02, 2)
@@ -119,12 +120,11 @@ class TradingEngine:
 
         df = pd.DataFrame(raw_chain)
         df = df[df['daysToExpiry'] >= config.DAYS_TO_EXPIRY_THRESHOLD]
-
         if df.empty:
-            return {"status": "Error", "message": "No active contracts cleared expiry filter constraints"}
+            return {"status": "Error", "message": "No active contracts cleared constraints"}
 
         df['delta_diff'] = (df['delta'] - 0.50).abs()
-        optimal_row = df.sort_values(by='delta_diff').iloc
+        optimal_row = df.sort_values(by='delta_diff').iloc[0]
 
         stop_loss_spot = current_price - (1.5 * atr)
         take_profit_spot = current_price + (3.0 * atr)
