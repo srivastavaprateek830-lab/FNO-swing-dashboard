@@ -14,7 +14,6 @@ st.title("⚡ F&O and MTF Swing Analytics Trading Terminal")
 st.caption("Alpha 8-Point Matrix Pipeline connected to DhanHQ Engine Layer")
 st.markdown("---")
 
-# Global Market Condition Injector Variables
 st.sidebar.header("🌍 Market Environment Sentinel")
 nifty_state = st.sidebar.radio("Nifty 50 Trend Regime Filter:", ("BULLISH (Above 20EMA)", "BEARISH (Below 20EMA)"))
 nifty_payload_string = "BULLISH" if "BULLISH" in nifty_state else "BEARISH"
@@ -23,7 +22,6 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.header("📋 Watchlist Core Feed")
-    # Enriched data tracking table structures
     watchlist_data = pd.DataFrame([
         {"Symbol": "RELIANCE", "ID": "2885", "FnO": True, "Price": 2450.0, "EMA20": 2400.0, "RSI": 58, "Vol": 2200000, "AvgVol": 1200000, "PrevHigh": 2440.0, "IVR": 35, "OI_Chg": 4.5, "Price_Chg": 1.2, "DayMove": 25.0, "ATR": 35.0},
         {"Symbol": "TCS", "ID": "11536", "FnO": True, "Price": 3800.0, "EMA20": 3850.0, "RSI": 45, "Vol": 800000, "AvgVol": 1000000, "PrevHigh": 3900.0, "IVR": 55, "OI_Chg": -1.2, "Price_Chg": -0.5, "DayMove": 15.0, "ATR": 55.0},
@@ -59,9 +57,7 @@ st.header("🎯 Volatility-Based Strike & Premium Target Projections")
 
 if row["FnO"]:
     if st.button(f"Execute Options Matrix Calculation For: {selected_symbol}"):
-               with st.spinner("Parsing active option chains and processing volatility bands..."):
-            
-            # Fetch live structural projections using calculated metrics
+        with st.spinner("Parsing active option chains and processing volatility bands..."):
             strike_details = engine.optimize_strike_with_targets(
                 underlying_symbol=selected_symbol,
                 current_price=float(row["Price"]),
@@ -86,4 +82,3 @@ if row["FnO"]:
                 st.error(f"Strategy Compilation Failed: {strike_details.get('message')}")
 else:
     st.warning("Selected asset is not configured for F&O contracts. Option strike projections deactivated.")
-
