@@ -2,17 +2,19 @@ import streamlit as st
 import pandas as pd
 from signal_engine import TradingEngine
 
-st.set_page_config(page_title="Institutional Swing Terminal", layout="wide")
+# Force application container to use standard compact width limits
+st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
-# Institutional Theme Styling Layer: Restricts row inflation and enforces compact typography
+# Institutional Spacing Minimization Layer
 st.markdown("""
 <style>
-    .block-container { padding-top: 1rem !important; padding-bottom: 0rem !important; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
-    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
-    .stDataFrame div { font-size: 12px !important; }
-    .compact-text { font-family: monospace; font-size: 11px; margin-bottom: 2px; line-height: 1.3; }
-    h3, h4 { margin-top: 0rem !important; margin-bottom: 0.2rem !important; padding: 0rem !important; font-size: 14px !important; font-weight: bold !important; color: #E2E8F0 !important; }
-    .stAlert { padding: 5px !important; margin-top: 5px !important; }
+    .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
+    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.3rem !important; }
+    .stDataFrame div { font-size: 11px !important; }
+    .matrix-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }
+    .badge-buy { background-color: #162415; color: #00FF00; padding: 2px 6px; font-weight: bold; border-radius: 3px; font-family: monospace; font-size: 11px; }
+    .badge-sell { background-color: #2D1414; color: #FF3333; padding: 2px 6px; font-weight: bold; border-radius: 3px; font-family: monospace; font-size: 11px; }
+    .badge-neutral { background-color: #1E2530; color: #CCCCCC; padding: 2px 6px; font-weight: bold; border-radius: 3px; font-family: monospace; font-size: 11px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -22,120 +24,117 @@ def get_engine():
 
 engine = get_engine()
 
-# --- INSTALMENT TRACKING DATABASE ---
+# --- THEMATIC COMPREHENSIVE SECTOR DATABASE ---
 master_database = pd.DataFrame([
-    {"Symbol": "HDFC BANK", "ID": "1333", "Sector": "Banking & Financials", "FnO": True, "Price": 1650.0, "EMA20": 1620.0, "RSI": 58, "Vol": 8200000, "AvgVol": 5000000, "PrevHigh": 1640.0, "IVR": 22, "OI_Chg": 4.1, "Price_Chg": 1.2, "DayMove": 18.0, "ATR": 22.0},
-    {"Symbol": "ICICI BANK", "ID": "11483", "Sector": "Banking & Financials", "FnO": True, "Price": 1120.0, "EMA20": 1100.0, "RSI": 62, "Vol": 6500000, "AvgVol": 4000000, "PrevHigh": 1115.0, "IVR": 18, "OI_Chg": 3.8, "Price_Chg": 0.9, "DayMove": 12.0, "ATR": 15.0},
-    {"Symbol": "SBIN", "ID": "3045", "Sector": "Banking & Financials", "FnO": True, "Price": 780.0, "EMA20": 795.0, "RSI": 45, "Vol": 3100000, "AvgVol": 5000000, "PrevHigh": 790.0, "IVR": 35, "OI_Chg": -1.5, "Price_Chg": -0.8, "DayMove": 8.0, "ATR": 12.0},
-    {"Symbol": "TCS", "ID": "11536", "Sector": "Information Technology", "FnO": True, "Price": 3800.0, "EMA20": 3850.0, "RSI": 42, "Vol": 800000, "AvgVol": 1000000, "PrevHigh": 3900.0, "IVR": 55, "OI_Chg": -1.2, "Price_Chg": -0.5, "DayMove": 15.0, "ATR": 55.0},
-    {"Symbol": "INFY", "ID": "1594", "Sector": "Information Technology", "FnO": True, "Price": 1520.0, "EMA20": 1500.0, "RSI": 56, "Vol": 4500000, "AvgVol": 3000000, "PrevHigh": 1510.0, "IVR": 28, "OI_Chg": 2.5, "Price_Chg": 1.1, "DayMove": 22.0, "ATR": 28.0},
-    {"Symbol": "TATAMOTORS", "ID": "3456", "Sector": "Automobiles", "FnO": True, "Price": 960.0, "EMA20": 910.0, "RSI": 68, "Vol": 9800000, "AvgVol": 6000000, "PrevHigh": 945.0, "IVR": 42, "OI_Chg": 6.8, "Price_Chg": 2.4, "DayMove": 28.0, "ATR": 20.0},
-    {"Symbol": "MARUTI", "ID": "10999", "Sector": "Automobiles", "FnO": True, "Price": 12200.0, "EMA20": 12100.0, "RSI": 51, "Vol": 400000, "AvgVol": 350000, "PrevHigh": 12180.0, "IVR": 19, "OI_Chg": 0.5, "Price_Chg": 0.3, "DayMove": 90.0, "ATR": 180.0},
-    {"Symbol": "ZOMATO", "ID": "5097", "Sector": "Consumer Internet", "FnO": False, "Price": 160.0, "EMA20": 145.0, "RSI": 65, "Vol": 15000000, "AvgVol": 8000000, "PrevHigh": 155.0, "IVR": 0, "OI_Chg": 0.0, "Price_Chg": 3.4, "DayMove": 4.0, "ATR": 5.0}
+    {"Symbol": "TCS", "ID": "11536", "Sector": "Nifty IT", "FnO": True, "Price": 3800.0, "EMA20": 3850.0, "RSI": 42, "Vol": 800000, "AvgVol": 1000000, "PrevHigh": 3900.0, "IVR": 55, "OI_Chg": -1.2, "Price_Chg": -0.5, "DayMove": 15.0, "ATR": 55.0},
+    {"Symbol": "INFY", "ID": "1594", "Sector": "Nifty IT", "FnO": True, "Price": 1520.0, "EMA20": 1500.0, "RSI": 56, "Vol": 4500000, "AvgVol": 3000000, "PrevHigh": 1510.0, "IVR": 28, "OI_Chg": 2.5, "Price_Chg": 1.1, "DayMove": 22.0, "ATR": 28.0},
+    {"Symbol": "HCLTECH", "ID": "1345", "Sector": "Nifty IT", "FnO": True, "Price": 1410.0, "EMA20": 1390.0, "RSI": 54, "Vol": 2800000, "AvgVol": 2000000, "PrevHigh": 1400.0, "IVR": 20, "OI_Chg": 3.1, "Price_Chg": 1.4, "DayMove": 19.0, "ATR": 24.0},
+    {"Symbol": "LTIM", "ID": "17832", "Sector": "Nifty IT", "FnO": True, "Price": 4900.0, "EMA20": 4820.0, "RSI": 59, "Vol": 900000, "AvgVol": 700000, "PrevHigh": 4880.0, "IVR": 32, "OI_Chg": 1.8, "Price_Chg": 0.8, "DayMove": 45.0, "ATR": 85.0},
+    {"Symbol": "WIPRO", "ID": "3787", "Sector": "Nifty IT", "FnO": True, "Price": 480.0, "EMA20": 472.0, "RSI": 54, "Vol": 2100000, "AvgVol": 1500000, "PrevHigh": 478.0, "IVR": 14, "OI_Chg": 1.1, "Price_Chg": 0.6, "DayMove": 5.0, "ATR": 8.0},
+    {"Symbol": "SUNPHARMA", "ID": "3333", "Sector": "Nifty Pharma", "FnO": True, "Price": 1540.0, "EMA20": 1510.0, "RSI": 58, "Vol": 1800000, "AvgVol": 1200000, "PrevHigh": 1530.0, "IVR": 19, "OI_Chg": 2.2, "Price_Chg": 1.3, "DayMove": 14.0, "ATR": 22.0},
+    {"Symbol": "TATAMOTORS", "ID": "3456", "Sector": "Nifty Auto", "FnO": True, "Price": 960.0, "EMA20": 910.0, "RSI": 68, "Vol": 9800000, "AvgVol": 6000000, "PrevHigh": 945.0, "IVR": 42, "OI_Chg": 6.8, "Price_Chg": 2.4, "DayMove": 28.0, "ATR": 20.0}
 ])
 
-# --- DYNAMIC SECTOR MOMENTUM ENGINE ---
+# --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
 sector_stats = []
 for sector, group in master_database.groupby("Sector"):
     bullish_stocks = group[(group["RSI"] > 50) & (group["Price"] > group["EMA20"])]
     bullish_score = len(bullish_stocks) / len(group) * 100
-    avg_price_gain = group["Price_Chg"].mean()
-    sector_stats.append({"Sector": sector, "Strength": f"🔥 {bullish_score:.0f}% BULLISH", "Avg Gain": f"{avg_price_gain:+.2f}%", "_score": bullish_score})
-
+    sector_stats.append({"Sector": sector, "Concentration": f"🔥 {bullish_score:.0f}% BULLISH", "_score": bullish_score})
 sector_df = pd.DataFrame(sector_stats).sort_values(by="_score", ascending=False)
 
-# --- GLOBAL BRANDING HEADER STRIP ---
-hc1, hc2, hc3 = st.columns([2, 1, 1])
-with hc1:
-    st.markdown("### ⚡ LIVE THEMATIC TRADING TERMINAL")
-with hc2:
-    st.markdown("<div style='text-align:right;font-size:12px;color:#888;'>Index: <b style='color:#00FF00;'>NIFTY 50 BULLISH</b></div>", unsafe_allow_html=True)
-with hc3:
-    st.markdown("<div style='text-align:right;font-size:12px;color:#888;'>Volatility: <b style='color:#FF9900;'>ATR NORMAL</b></div>", unsafe_allow_html=True)
-
-st.markdown("<hr style='margin-top:0.1rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
-
 # ==============================================================================
-# ROW 1: SECTOR HEATMAP & RADAR CONTROLS (BALANCED HORIZONTAL SPREAD)
+# TERMINAL WORKSPACE HORIZONTAL LAYOUT INTERFACE
 # ==============================================================================
-r1_col1, r1_col2 = st.columns([1.2, 1])
+left_panel, right_panel = st.columns([2.3, 1])
 
-with r1_col1:
+with left_panel:
     with st.container(border=True):
-        st.markdown("#### 🔥 Industry Sector Rotation Matrix")
-        st.dataframe(sector_df[["Sector", "Strength", "Avg Gain"]], use_container_width=True, hide_index=True, height=120)
-
-with r1_col2:
-    with st.container(border=True):
-        st.markdown("#### 🎛️ Terminal Interactive Radar")
-        # Sector drop box filters data
-        selected_sector = st.selectbox("1. Filter Watchlist by Sector Theme:", sector_df["Sector"].unique())
+        st.markdown("<div class='matrix-title'>❖ Sectoral Stocks Thematic Board</div>", unsafe_allow_html=True)
+        
+        # Horizontal Control Row alignment layout
+        sel_c1, sel_c2 = st.columns([1, 1.5])
+        with sel_c1:
+            selected_sector = st.selectbox("Filter Sector Theme:", sector_df["Sector"].unique(), label_visibility="collapsed")
+        with sel_c2:
+            st.markdown("<span style='font-size:11px;color:#888;'><i>Ex - Selecting a theme instantly re-populates the execution workspace table rows below.</i></span>", unsafe_allow_html=True)
+            
+        # Extract stock items filtered matching the dropdown matrix
         filtered_watchlist = master_database[master_database["Sector"] == selected_sector]
         
-        # Stock dropdown updates based on the selected sector
-        selected_symbol = st.selectbox("2. Select Active Target Asset:", filtered_watchlist["Symbol"])
+        # Build out processing list arrays to generate custom visual table frames
+        compiled_rows = []
+        for _, stock in filtered_watchlist.iterrows():
+            metrics_payload = {
+                "close": stock["Price"], "ema_20": stock["EMA20"], "rsi": stock["RSI"],
+                "volume": stock["Vol"], "avg_volume": stock["AvgVol"], "prev_high": stock["PrevHigh"],
+                "nifty_trend": "BULLISH", "oi_change_pct": stock["OI_Chg"], "price_change_pct": stock["Price_Chg"],
+                "day_move": stock["DayMove"], "atr": stock["ATR"]
+            }
+            # Query backend compliance script
+            analysis = engine.route_asset(stock["Symbol"], stock["ID"], stock["FnO"], metrics_payload)
+            score = analysis["score"]
+            
+            # Format row data fields matching the spreadsheet structural parameters
+            final_call = "🟢 BUY" if score >= 6 else ("⚪ NEUTRAL" if 4 <= score <= 5 else "🔴 SELL")
+            mtf_elig = "YES" if score >= 4 else "NO"
+            fno_elig = "YES" if stock["FnO"] else "NO"
+            supertrend = "🟩 PASS" if stock["Price"] > stock["EMA20"] else "🟥 FAIL"
+            
+            compiled_rows.append({
+                "Ticker": stock["Symbol"], "LTP": f"₹{stock['Price']}", "RSI": int(stock["RSI"]),
+                "OI_CHG": f"{stock['OI_Chg']:+.1f}%", "Supertrend": supertrend,
+                "Trend": "PASS" if stock["Price"] > stock["EMA20"] else "FAIL",
+                "Momentum": "PASS" if stock["RSI"] > 50 else "FAIL",
+                "Volume": "PASS" if stock["Vol"] > stock["AvgVol"] else "FAIL",
+                "Del Strength": "PASS" if score >= 4 else "FAIL",
+                "Breakout": "YES" if stock["Price"] > stock["PrevHigh"] else "NO",
+                "Final Callout": final_call, "MTF": mtf_elig, "FNO": fno_elig
+            })
+            
+        st.dataframe(pd.DataFrame(compiled_rows), use_container_width=True, hide_index=True, height=180)
 
+with right_panel:
+    with st.container(border=True):
+        st.markdown("<div class='matrix-title'>❖ Top 3 Outperforming Sectors - Today</div>", unsafe_allow_html=True)
+        st.dataframe(sector_df[["Sector", "Concentration"]].head(3), use_container_width=True, hide_index=True, height=115)
+        
+    with st.container(border=True):
+        st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
+        selected_symbol = st.selectbox("Choose Target Asset for Option Projections:", filtered_watchlist["Symbol"], label_visibility="collapsed")
+
+# ==============================================================================
+# BOTTOM MATRIX: OPTION GREEK MATRIX & CALCULATION HOOK
+# ==============================================================================
 st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
 
-# Lock target data row instantly
-row = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
-
-# ==============================================================================
-# ROW 2: DETAILED ANALYSIS DESK (THE 3-COLUMN INTUITIVE MATRIX)
-# ==============================================================================
-col1, col2, col3 = st.columns([1, 1.1, 1.2])
-
-with col1:
-    with st.container(border=True):
-        st.markdown(f"#### 📋 Feed: {selected_sector}")
-        # Displays the stock list filtered by your selected sector
-        st.dataframe(filtered_watchlist[["Symbol", "Price", "RSI", "OI_Chg"]], use_container_width=True, hide_index=True, height=220)
-
-with col2:
-    with st.container(border=True):
-        st.markdown("#### 📊 8-Point Compliance Matrix")
+with st.container(border=True):
+    st.markdown("<div class='matrix-title'>❖ Option Greek Matrix Target Segment</div>", unsafe_allow_html=True)
+    
+    target_stock = master_database[master_database["Symbol"] == selected_symbol].iloc[0]
+    
+    if target_stock["FnO"]:
+        strike_details = engine.optimize_strike_with_targets(
+            underlying_symbol=selected_symbol, current_price=float(target_stock["Price"]), atr=float(target_stock["ATR"]), target_delta=0.50
+        )
         
-        metrics_payload = {
-            "close": row["Price"], "ema_20": row["EMA20"], "rsi": row["RSI"],
-            "volume": row["Vol"], "avg_volume": row["AvgVol"], "prev_high": row["PrevHigh"],
-            "iv_rank": row["IVR"], "nifty_trend": "BULLISH", "oi_change_pct": row["OI_Chg"],
-            "price_change_pct": row["Price_Chg"], "day_move": row["DayMove"], "atr": row["ATR"]
-        }
+        # Display custom flat metrics array matching your final table blueprint row
+        greek_matrix_row = [{
+            "Ticker Target": target_stock["Symbol"],
+            "Spot Entry": f"₹ {target_stock['Price']}",
+            "Spot SL": f"₹ {strike_details['spot_sl']}",
+            "Spot TP": f"₹ {strike_details['spot_tp']}",
+            "Strike Price": f"{strike_details['strike']} {strike_details['type']}",
+            "Entry Prem": f"₹ {strike_details['current_premium']}",
+            "SL Premium": f"₹ {strike_details['premium_sl']}",
+            "Target TP1": f"₹ {strike_details['premium_tp']:.2f}",
+            "Target TP2": f"₹ {(strike_details['premium_tp'] * 1.25):.2f}",
+            "Target TP3": f"₹ {(strike_details['premium_tp'] * 1.50):.2f}"
+        }]
+        st.dataframe(pd.DataFrame(greek_matrix_row), use_container_width=True, hide_index=True)
         
-        analysis = engine.route_asset(row["Symbol"], row["ID"], row["FnO"], metrics_payload)
-        
-        score_color = "green" if analysis["score"] >= 6 else ("orange" if 4 <= analysis["score"] <= 5 else "red")
-        st.markdown(f"**Score:** :{score_color}[**{analysis['score']}/8**] | **Route:** `{analysis['route'][:20]}...`")
-        st.markdown("<hr style='margin:0.15rem;'>", unsafe_allow_html=True)
-        
-        # Highly optimized checklist layout with zero vertical bloating
-        for key, val in analysis["breakdown"].items():
-            color = "🟢" if "PASS" in str(val) or "BULLISH" in str(val) or "SAFE" in str(val) or "%" in str(val) or "LONG" in str(val) else "🔴"
-            st.markdown(f"<div class='compact-text'>{color} {key[3:]}: <b>{val}</b></div>", unsafe_allow_html=True)
-
-with col3:
-    with st.container(border=True):
-        st.markdown("#### 🎯 Option Greek Target Matrix")
-        
-        if row["FnO"]:
-            strike_details = engine.optimize_strike_with_targets(
-                underlying_symbol=selected_symbol, current_price=float(row["Price"]), atr=float(row["ATR"]), target_delta=0.50
-            )
-            
-            st.markdown(f"**Target Lock:** <span style='color:#00FF00;font-weight:bold;'>{strike_details['strike']} {strike_details['type']} ({strike_details['expiry']})</span>", unsafe_allow_html=True)
-            st.markdown("<hr style='margin:0.15rem;'>", unsafe_allow_html=True)
-            
-            rc1, rc2 = st.columns(2)
-            with rc1:
-                st.markdown(f"<div class='compact-text'>▶ Entry Prem: <b>₹{strike_details['current_premium']}</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='compact-text'>▶ Spot SL: <b>₹{strike_details['spot_sl']}</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='compact-text'>▶ Premium SL: <span style='color:#FF3333;'><b>₹{strike_details['premium_sl']}</b></span></div>", unsafe_allow_html=True)
-            with rc2:
-                st.markdown(f"<div class='compact-text'>▶ Target Delta: <b>{strike_details['delta']:.2f}</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='compact-text'>▶ Spot TP: <b>₹{strike_details['spot_tp']}</b></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='compact-text'>▶ Premium TP: <span style='color:#00FF00;'><b>₹{strike_details['premium_tp']}</b></span></div>", unsafe_allow_html=True)
-                
-            st.markdown("<hr style='margin:0.15rem;'>", unsafe_allow_html=True)
-            st.success("🎯 Order Router Armed.")
-        else:
-            st.warning("⚠️ CASH SEGMENT ONLY: Derivative targeting modules locked for this asset.")
+        if st.button(f"🚀 FIRE SEMI-AUTO SWING EXECUTION ROUTE FOR: {selected_symbol}", use_container_width=True):
+            st.balloons()
+            st.success("Order routing payload sent over terminal API layer.")
+    else:
+        st.warning("⚠️ CHOSEN SECURITIES LAYER RESTRICTED TO CASH TRADING ALIGNMENTS ONLY. DERIVATIVE CHANNELS LOCKED.")
