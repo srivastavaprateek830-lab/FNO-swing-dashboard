@@ -26,16 +26,8 @@ engine = get_engine()
 st.sidebar.header("🎛️ SYSTEM MODE CONTROLS")
 data_mode = st.sidebar.radio("Data Environment:", ("SIMULATION (Safe Mock Feed)", "LIVE MARKET (Dhan Connection)"))
 
-# --- THEMATIC COMPREHENSIVE SECTOR DATABASE ---
-master_database = pd.DataFrame([
-    {"Symbol": "TCS", "ID": "11536", "Sector": "Nifty IT", "FnO": True, "Price": 3800.0, "EMA20": 3850.0, "RSI": 42, "Vol": 800000, "AvgVol": 1000000, "PrevHigh": 3900.0, "IVR": 55, "OI_Chg": -1.2, "Price_Chg": -0.5, "DayMove": 15.0, "ATR": 55.0},
-    {"Symbol": "INFY", "ID": "1594", "Sector": "Nifty IT", "FnO": True, "Price": 1520.0, "EMA20": 1500.0, "RSI": 56, "Vol": 4500000, "AvgVol": 3000000, "PrevHigh": 1510.0, "IVR": 28, "OI_Chg": 2.5, "Price_Chg": 1.1, "DayMove": 22.0, "ATR": 28.0},
-    {"Symbol": "HCLTECH", "ID": "1345", "Sector": "Nifty IT", "FnO": True, "Price": 1410.0, "EMA20": 1390.0, "RSI": 54, "Vol": 2800000, "AvgVol": 2000000, "PrevHigh": 1400.0, "IVR": 20, "OI_Chg": 3.1, "Price_Chg": 1.4, "DayMove": 19.0, "ATR": 24.0},
-    {"Symbol": "LTIM", "ID": "17832", "Sector": "Nifty IT", "FnO": True, "Price": 4900.0, "EMA20": 4820.0, "RSI": 59, "Vol": 900000, "AvgVol": 700000, "PrevHigh": 4880.0, "IVR": 32, "OI_Chg": 1.8, "Price_Chg": 0.8, "DayMove": 45.0, "ATR": 85.0},
-    {"Symbol": "WIPRO", "ID": "3787", "Sector": "Nifty IT", "FnO": True, "Price": 480.0, "EMA20": 472.0, "RSI": 54, "Vol": 2100000, "AvgVol": 1500000, "PrevHigh": 478.0, "IVR": 14, "OI_Chg": 1.1, "Price_Chg": 0.6, "DayMove": 5.0, "ATR": 8.0},
-    {"Symbol": "SUNPHARMA", "ID": "3333", "Sector": "Nifty Pharma", "FnO": True, "Price": 1540.0, "EMA20": 1510.0, "RSI": 58, "Vol": 1800000, "AvgVol": 1200000, "PrevHigh": 1530.0, "IVR": 19, "OI_Chg": 2.2, "Price_Chg": 1.3, "DayMove": 14.0, "ATR": 22.0},
-    {"Symbol": "TATAMOTORS", "ID": "3456", "Sector": "Nifty Auto", "FnO": True, "Price": 960.0, "EMA20": 910.0, "RSI": 68, "Vol": 9800000, "AvgVol": 6000000, "PrevHigh": 945.0, "IVR": 42, "OI_Chg": 6.8, "Price_Chg": 2.4, "DayMove": 28.0, "ATR": 20.0}
-])
+# --- EXTRACTION FROM EXPANDED BRAIN SECURED FEED ---
+master_database = engine.fetcher.load_all_market_securities()
 
 # --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
 sector_stats = []
@@ -92,23 +84,22 @@ with right_panel:
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
-        
         if len(selected_row_data.selection.rows) > 0:
             default_index = int(selected_row_data.selection.rows[0])
             
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# Safe single-row extraction wrapper
 target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
 target_stock = target_stock_df.iloc[0]
-# Pass selection state properties directly to backend execution paths securely (removed force_mock argument)
+
+# Pass selection state properties directly to backend execution paths securely
 strike_details = engine.optimize_strike_with_targets(
     underlying_symbol=str(target_stock["ID"]),
     current_price=float(target_stock["Price"]),
     atr=float(target_stock["ATR"])
 )
 
-# If user turns on SIMULATION mode, force the targets array to present structural mock metrics directly in the layout
+# Force immediate mock simulation parameters if user keeps control in simulation mode
 if "SIMULATION" in data_mode:
     mock_strike = round(float(target_stock["Price"]), -2)
     mock_premium = round(float(target_stock["Price"]) * 0.02, 2)
@@ -147,7 +138,7 @@ with fno_box:
             fno_matrix_row = [{
                 "Option Strike": f"{strike_details['strike']} {strike_details['type']}", "Entry Premium": f"₹ {strike_details['current_premium']}",
                 "Premium SL": f"₹ {strike_details['premium_sl']}", "Premium TP1": f"₹ {strike_details['premium_tp']:.2f}",
-                "Premium TP2": f"₹ {(strike_details['premium_tp'] * 1.25):.2f}", "Premium TP3": f"₹ {(strike_details['premium_tp'] * 1.50):.2f}"
+                "Premium TP2": f"₹ {(strike_choice * 1.25 if 'strike_choice' in locals() else strike_details['premium_tp'] * 1.25):.2f}", "Premium TP3": f"₹ {(strike_choice * 1.50 if 'strike_choice' in locals() else strike_details['premium_tp'] * 1.50):.2f}"
             }]
             st.dataframe(pd.DataFrame(fno_matrix_row), use_container_width=True, hide_index=True)
             if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
