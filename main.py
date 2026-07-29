@@ -8,18 +8,23 @@ import nifty_sectors
 # Force application container to use standard compact width limits
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
-# AUTOMATIC REAL-TIME REFRESH TIMER
-# NOTE: Dhan's LTP endpoint is capped at ~1 request/second. A 5-second refresh is already safe
-# for a single session, but multiple open browser tabs each running their own 5s loop can stack
-# up and trip the limit (HTTP 429). 15s keeps a comfortable safety margin while still feeling live.
-AUTO_REFRESH_SECONDS = 15
-st.caption(f"⏳ UNIVERSAL EXCHANGE ENGINE OPERATIONAL: Streaming all active NSE F&O counters every {AUTO_REFRESH_SECONDS} seconds...")
+# How often the live panel refreshes itself, in seconds.
+# Change this single number to slow it down further (e.g. 60 for once a minute).
+AUTO_REFRESH_SECONDS = 30
 
+with st.sidebar:
+    st.markdown("### ⚙️ Refresh Controls")
+    auto_refresh_enabled = st.checkbox(
+        "Enable auto-refresh",
+        value=True,
+        help="Turn off to stop background polling entirely and use 'Refresh Now' instead.",
+    )
+    st.button("🔄 Refresh Now", use_container_width=True)
 
-@st.fragment(run_every=AUTO_REFRESH_SECONDS)
-def enforce_auto_refresh_loop():
-    st.rerun()
-
+if auto_refresh_enabled:
+    st.caption(f"⏳ UNIVERSAL EXCHANGE ENGINE OPERATIONAL: Streaming all active NSE F&O counters every {AUTO_REFRESH_SECONDS} seconds...")
+else:
+    st.caption("⏸️ Auto-refresh is OFF. Use 'Refresh Now' in the sidebar to pull live data on demand.")
 
 st.markdown("""
 <style>
@@ -45,7 +50,8 @@ def fetch_dynamic_nse_fno_universe():
       - Dhan's official instrument master CSV -> live Security IDs + CURRENT lot sizes
       - A local static sector/theme map (nifty_sectors.py) -> just for the UI grouping label
     Security IDs and lot sizes always come live from Dhan, never hardcoded, since a wrong
-    lot size feeding into a real order is a money-risk, not just a cosmetic bug."""
+    lot size feeding into a real order is a money-risk, not just a cosmetic bug.
+    This is cached for 4 hours - it does NOT re-run on every refresh cycle."""
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         master_url = "https://images.dhan.co/api-data/api-scrip-master.csv"
@@ -101,120 +107,124 @@ def fetch_dynamic_nse_fno_universe():
         ])
 
 
-# Generate the complete dynamic trading dataset on startup
-master_database = fetch_dynamic_nse_fno_universe()
+# Built once (cached 4h) - the stock universe itself doesn't need to redraw every refresh cycle
+static_universe = fetch_dynamic_nse_fno_universe()
 
-# BATCH RUN MARKET QUOTES: Queries live server ticks for all tickers in your database at once
-security_ids_list = master_database["ID"].tolist()
-live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
-
-if getattr(engine.fetcher, "quotes_stale", False):
-    # A transient failure (e.g. rate limit) happened this cycle - we're showing the last known
-    # good prices rather than blanking the table. Only a real problem if this persists for long.
-    st.warning(f"⚠️ Showing last known prices (live refresh hit an issue): {engine.fetcher.last_error}")
-
-# Overwrite display rows with real-time exchange ticks natively
-master_database["Price"] = master_database["ID"].apply(lambda x: float(live_prices_dictionary.get(str(x), 0.0)))
-master_database = master_database[master_database["Price"] > 0.0].reset_index(drop=True)
-
-if master_database.empty:
-    st.error(
-        "No live prices available yet from Dhan (not even a cached price). Common causes: market is "
-        "closed, access token expired/not rotated, or Data API isn't subscribed on this Dhan account. "
-        f"Last error: {engine.fetcher.last_error}"
-    )
-    st.stop()
-
-# Calculate true sectoral distribution tracking parameters dynamically
-sector_counts = master_database["Sector"].value_counts().to_frame().reset_index()
-sector_counts.columns = ["Sector Theme", "Live Ticker Count"]
-# ==============================================================================
-# ROW 1: WORKSPACE HORIZONTAL PANELS
-# ==============================================================================
-left_panel, right_panel = st.columns([2.3, 1])
-
-with left_panel:
-    with st.container(border=True):
-        st.markdown("<div class='matrix-title'>❖ THEMATIC INDUSTRY CLUSTER FILTERS & SCANNER DESK</div>", unsafe_allow_html=True)
-        selected_sector = st.selectbox("Select Active Sector Theme Group:", master_database["Sector"].unique(), label_visibility="collapsed")
-
-        filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
-        compiled_rows = []
-        for _, stock in filtered_watchlist.iterrows():
-            close_val = float(stock["Price"])
-            atr_val = round(close_val * 0.02, 2)
-
-            # NOTE: RSI/Supertrend/Trend/Momentum/Volume/Breakout/Final Callout below are still
-            # STATIC PLACEHOLDERS, not computed signals. Live price/ID/lot-size flow is now fixed;
-            # real indicator calculations (needs historical OHLC) are a separate follow-up.
-            compiled_rows.append({
-                "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "RSI": 55, "Supertrend": "🟩 PASS",
-                "Trend": "PASS", "Momentum": "PASS", "Volume": "PASS", "Del Strength": "PASS", "Breakout": "YES",
-                "Final Callout": "🟢 BUY", "MTF": "YES", "FNO": "YES", "ATR": atr_val
-            })
-        df_display = pd.DataFrame(compiled_rows)
-        selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
-
-with right_panel:
-    with st.container(border=True):
-        st.markdown("<div class='matrix-title'>❖ Active Derivatives Segment Weights</div>", unsafe_allow_html=True)
-        st.dataframe(sector_counts, use_container_width=True, hide_index=True, height=130)
-
-    with st.container(border=True):
-        st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
-        stock_options = filtered_watchlist["Symbol"].tolist()
-
-        default_index = 0
-        if selected_row_data.selection and len(selected_row_data.selection.rows) > 0:
-            default_index = int(next(iter(selected_row_data.selection.rows)))
-
-        selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
-
-# Pull target stock record cleanly out of the tracking library arrays matching current index selection states
-target_stock_df = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True)
-target_stock_row = target_stock_df.iloc[0].to_dict()
-
-current_ltp = float(target_stock_row["Price"])
-calculated_atr = current_ltp * 0.02
-
-# Query option chain contracts live from Dhan API server network
-strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
 
 # ==============================================================================
-# ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
+# EVERYTHING BELOW THIS POINT LIVES INSIDE ONE FRAGMENT.
+# That means: (a) run_every re-executes ONLY this function on a timer, not the whole
+# page - no more full-dashboard flicker, and (b) clicking the selectbox, dataframe row,
+# or Fire buttons inside it also only reruns this fragment, not the whole app.
 # ==============================================================================
-st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
-mtf_box, fno_box = st.columns(2)
+@st.fragment(run_every=AUTO_REFRESH_SECONDS if auto_refresh_enabled else None)
+def live_dashboard(master_database):
+    security_ids_list = master_database["ID"].tolist()
+    live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
 
-with mtf_box:
-    with st.container(border=True):
-        st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-        mtf_matrix_row = [{
-            "Asset": target_stock_row["Symbol"], "Spot Entry": f"₹ {current_ltp}",
-            "Spot SL (Stop Down)": f"₹ {strike_details['spot_sl']}", "Spot TP (Target Up)": f"₹ {strike_details['spot_tp']}",
-            "MTF Max Funding": "Up to 4x Leverage", "Order Units": "10 Shares"
-        }]
-        st.dataframe(pd.DataFrame(mtf_matrix_row), use_container_width=True, hide_index=True)
-        if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
-            payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
-            response = engine.fetcher.place_live_order(payload)  # FIX: was engine.place_live_order (method didn't exist)
-            st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+    if getattr(engine.fetcher, "quotes_stale", False):
+        st.warning(f"⚠️ Showing last known prices (live refresh hit an issue): {engine.fetcher.last_error}")
 
-with fno_box:
-    with st.container(border=True):
-        st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-        official_lot_multiplier = int(target_stock_row["LotSize"])
-        fno_matrix_row = [{
-            "Option Strike": f"{strike_details['strike']} {strike_details['type']}", "Entry Premium": f"₹ {strike_details['current_premium']}",
-            "Premium SL": f"₹ {strike_details['premium_sl']}", "Contract Multiplier": f"{official_lot_multiplier} Shares (1 Lot)",
-            "Premium TP": f"₹ {strike_details['premium_tp']}"
-        }]
-        st.dataframe(pd.DataFrame(fno_matrix_row), use_container_width=True, hide_index=True)
-        if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
-            payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "FNO", quantity=official_lot_multiplier)
-            response = engine.fetcher.place_live_order(payload)
-            st.balloons()
-            st.success(f"Live Option Order Fired! Units: {official_lot_multiplier}. ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+    master_database = master_database.copy()
+    master_database["Price"] = master_database["ID"].apply(lambda x: float(live_prices_dictionary.get(str(x), 0.0)))
+    master_database = master_database[master_database["Price"] > 0.0].reset_index(drop=True)
 
-# Start background auto-refresh thread seamlessly
-enforce_auto_refresh_loop()
+    if master_database.empty:
+        st.error(
+            "No live prices available yet from Dhan (not even a cached price). Common causes: market is "
+            "closed, access token expired/not rotated, or Data API isn't subscribed on this Dhan account. "
+            f"Last error: {engine.fetcher.last_error}"
+        )
+        return
+
+    sector_counts = master_database["Sector"].value_counts().to_frame().reset_index()
+    sector_counts.columns = ["Sector Theme", "Live Ticker Count"]
+    # ==============================================================================
+    # ROW 1: WORKSPACE HORIZONTAL PANELS
+    # ==============================================================================
+    left_panel, right_panel = st.columns([2.3, 1])
+
+    with left_panel:
+        with st.container(border=True):
+            st.markdown("<div class='matrix-title'>❖ THEMATIC INDUSTRY CLUSTER FILTERS & SCANNER DESK</div>", unsafe_allow_html=True)
+            selected_sector = st.selectbox("Select Active Sector Theme Group:", master_database["Sector"].unique(), label_visibility="collapsed")
+
+            filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
+            compiled_rows = []
+            for _, stock in filtered_watchlist.iterrows():
+                close_val = float(stock["Price"])
+                atr_val = round(close_val * 0.02, 2)
+
+                # NOTE: RSI/Supertrend/Trend/Momentum/Volume/Breakout/Final Callout below are still
+                # STATIC PLACEHOLDERS, not computed signals - a separate follow-up item.
+                compiled_rows.append({
+                    "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "RSI": 55, "Supertrend": "🟩 PASS",
+                    "Trend": "PASS", "Momentum": "PASS", "Volume": "PASS", "Del Strength": "PASS", "Breakout": "YES",
+                    "Final Callout": "🟢 BUY", "MTF": "YES", "FNO": "YES", "ATR": atr_val
+                })
+            df_display = pd.DataFrame(compiled_rows)
+            selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
+
+    with right_panel:
+        with st.container(border=True):
+            st.markdown("<div class='matrix-title'>❖ Active Derivatives Segment Weights</div>", unsafe_allow_html=True)
+            st.dataframe(sector_counts, use_container_width=True, hide_index=True, height=130)
+
+        with st.container(border=True):
+            st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
+            stock_options = filtered_watchlist["Symbol"].tolist()
+
+            default_index = 0
+            if selected_row_data.selection and len(selected_row_data.selection.rows) > 0:
+                default_index = int(next(iter(selected_row_data.selection.rows)))
+
+            selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
+
+    # Pull target stock record cleanly out of the tracking library arrays matching current index selection states
+    target_stock_df = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True)
+    target_stock_row = target_stock_df.iloc[0].to_dict()
+
+    current_ltp = float(target_stock_row["Price"])
+    calculated_atr = current_ltp * 0.02
+
+    # Query option chain contracts live from Dhan API server network
+    strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
+
+    # ==============================================================================
+    # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
+    # ==============================================================================
+    st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
+    mtf_box, fno_box = st.columns(2)
+
+    with mtf_box:
+        with st.container(border=True):
+            st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
+            mtf_matrix_row = [{
+                "Asset": target_stock_row["Symbol"], "Spot Entry": f"₹ {current_ltp}",
+                "Spot SL (Stop Down)": f"₹ {strike_details['spot_sl']}", "Spot TP (Target Up)": f"₹ {strike_details['spot_tp']}",
+                "MTF Max Funding": "Up to 4x Leverage", "Order Units": "10 Shares"
+            }]
+            st.dataframe(pd.DataFrame(mtf_matrix_row), use_container_width=True, hide_index=True)
+            if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
+                payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
+                response = engine.fetcher.place_live_order(payload)
+                st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+
+    with fno_box:
+        with st.container(border=True):
+            st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
+            official_lot_multiplier = int(target_stock_row["LotSize"])
+            fno_matrix_row = [{
+                "Option Strike": f"{strike_details['strike']} {strike_details['type']}", "Entry Premium": f"₹ {strike_details['current_premium']}",
+                "Premium SL": f"₹ {strike_details['premium_sl']}", "Contract Multiplier": f"{official_lot_multiplier} Shares (1 Lot)",
+                "Premium TP": f"₹ {strike_details['premium_tp']}"
+            }]
+            st.dataframe(pd.DataFrame(fno_matrix_row), use_container_width=True, hide_index=True)
+            if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
+                payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "FNO", quantity=official_lot_multiplier)
+                response = engine.fetcher.place_live_order(payload)
+                st.balloons()
+                st.success(f"Live Option Order Fired! Units: {official_lot_multiplier}. ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+
+
+live_dashboard(static_universe)
