@@ -19,10 +19,7 @@ class DhanDataFetcher:
         self._chain_cache = {}    # {(security_id, expiry): (chain_rows, fetched_at)}
 
         # --- LTP throttling / stale-fallback state ---
-        # Dhan caps /v2/marketfeed/ltp at roughly 1 request/second. Multiple browser tabs or a
-        # too-fast auto-refresh can blow past that and get you a 429 (or a temporary block if it
-        # keeps happening). We enforce a minimum gap client-side, and on any failure we serve the
-        # last known-good prices instead of wiping the table to zero.
+        
         self._MIN_QUOTE_INTERVAL = 1.5   # seconds between actual calls to the LTP endpoint
         self._last_quote_call_time = 0.0
         self._quote_cache = {}           # {security_id: last_known_price}
