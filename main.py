@@ -108,7 +108,7 @@ master_database = fetch_dynamic_nse_fno_universe()
 security_ids_list = master_database["ID"].tolist()
 live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
 
-if engine.fetcher.quotes_stale:
+if getattr(engine.fetcher, "quotes_stale", False):
     # A transient failure (e.g. rate limit) happened this cycle - we're showing the last known
     # good prices rather than blanking the table. Only a real problem if this persists for long.
     st.warning(f"⚠️ Showing last known prices (live refresh hit an issue): {engine.fetcher.last_error}")
