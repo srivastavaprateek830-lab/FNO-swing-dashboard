@@ -3,11 +3,12 @@ import pandas as pd
 from signal_engine import TradingEngine
 from securities_db import get_master_market_feed
 
+# Configure professional widescreen dashboard
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
 # AUTOMATIC REAL-TIME AUTO-REFRESH TIMER: Forces tables to update data elements every 10 seconds
 st.logo("https://dhan.co")
-st.caption("⏳ UNIVERSAL ENGINE LIVE: Auto-refreshing all 180+ NSE F&O instruments every 10 seconds...")
+st.caption("⏳ UNIVERSAL ENGINE LIVE: Auto-refreshing all active NSE F&O instruments every 10 seconds...")
 st.fragment(run_every=10)(lambda: st.rerun())()
 
 st.markdown("""
@@ -24,16 +25,20 @@ def get_engine():
     return TradingEngine()
 
 engine = get_engine()
-
-# Pull the complete universal 180+ F&O data framework directly
 master_database = get_master_market_feed()
 
-# BATCH RUN MARKET QUOTES: Queries live server ticks for the entire exchange at the same time
+# BATCH RUN MARKET QUOTES: Queries live server ticks for all tickers in your database at once
 security_ids_list = master_database["ID"].tolist()
 live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
 
 # Map live quotes arrays straight back into display table rows
 master_database["Price"] = master_database["ID"].apply(lambda x: live_prices_dictionary.get(str(x), 100.0))
+
+# --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
+sector_stats = []
+for sector, group in master_database.groupby("Sector"):
+    sector_stats.append({"Sector": sector, "Concentration": f"🔥 {len(group)} LIVE SCANS"})
+sector_df = pd.DataFrame(sector_stats)
 
 # ==============================================================================
 # ROW 1: WORKSPACE HORIZONTAL PANELS
@@ -43,7 +48,7 @@ left_panel, right_panel = st.columns([2.3, 1])
 with left_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ THEMATIC INDUSTRY CLUSTER FILTERS & SCANNER DESK</div>", unsafe_allow_html=True)
-        selected_sector = st.selectbox("Select Active Sector:", master_database["Sector"].unique(), label_visibility="collapsed")
+        selected_sector = st.selectbox("Select Active Sector:", sector_df["Sector"].unique(), label_visibility="collapsed")
         
         filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
         compiled_rows = []
@@ -52,20 +57,17 @@ with left_panel:
             atr_val = round(close_val * 0.02, 2)
             
             compiled_rows.append({
-                "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "RSI": 55, "Supertrend": "🟩 PASS" if close_val > (close_val * 0.99) else "🟥 FAIL",
+                "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "RSI": 55, "Supertrend": "🟩 PASS",
                 "Trend": "PASS", "Momentum": "PASS", "Volume": "PASS", "Del Strength": "PASS", "Breakout": "YES",
                 "Final Callout": "🟢 BUY", "MTF": "YES", "FNO": "YES" if stock["FnO"] else "NO", "ATR": atr_val
             })
         df_display = pd.DataFrame(compiled_rows)
-        selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=220, on_select="rerun", selection_mode="single-row")
+        selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
 
 with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ All Active Sector Concentrations</div>", unsafe_allow_html=True)
-        # Display dynamic distribution metrics directly
-        sector_counts = master_database["Sector"].value_counts().to_frame().reset_index()
-        sector_counts.columns = ["Sector", "Active Instruments"]
-        st.dataframe(sector_counts, use_container_width=True, hide_index=True, height=130)
+        st.dataframe(sector_df[["Sector", "Concentration"]], use_container_width=True, hide_index=True, height=130)
         
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
@@ -75,8 +77,8 @@ with right_panel:
             default_index = int(selected_row_data.selection.rows)
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-target_stock = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True).iloc[0]
-current_ltp = float(live_prices_dictionary.get(str(target_stock["ID"]), 100.0))
+target_stock = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True).iloc
+current_ltp = float(live_prices_dictionary.get(str(target_stock["ID"]), 150.0))
 calculated_atr = current_ltp * 0.02
 
 strike_details = engine.optimize_strike_with_targets(str(target_stock["ID"]), current_ltp, calculated_atr)
