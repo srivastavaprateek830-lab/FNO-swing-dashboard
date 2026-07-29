@@ -1,7 +1,9 @@
+import io
 import streamlit as st
 import pandas as pd
 import requests
 from signal_engine import TradingEngine
+import nifty_sectors
 
 # Force application container to use standard compact width limits
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
@@ -9,9 +11,11 @@ st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 # AUTOMATIC REAL-TIME REFRESH TIMER: Silently updates data elements from Dhan every 5 seconds
 st.caption("⏳ UNIVERSAL EXCHANGE ENGINE OPERATIONAL: Streaming all active NSE F&O counters every 5 seconds...")
 
+
 @st.fragment(run_every=5)
 def enforce_auto_refresh_loop():
     st.rerun()
+
 
 st.markdown("""
 <style>
@@ -22,55 +26,76 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 @st.cache_resource
 def get_engine():
     return TradingEngine()
 
+
 engine = get_engine()
+
 
 @st.cache_data(ttl=14400)
 def fetch_dynamic_nse_fno_universe():
-    """DYNAMIC DATA INTEGRATION: Fetches full raw index metadata maps dynamically with ZERO hardcoded names."""
+    """Builds the live F&O stock universe by combining:
+      - Dhan's official instrument master CSV -> live Security IDs + CURRENT lot sizes
+      - A local static sector/theme map (nifty_sectors.py) -> just for the UI grouping label
+    Security IDs and lot sizes always come live from Dhan, never hardcoded, since a wrong
+    lot size feeding into a real order is a money-risk, not just a cosmetic bug."""
     try:
-        # Pulling a globally standardized, structured mapping matrix directly from a public institutional CDN
-        mapping_url = "https://githubusercontent.com"
-        index_data = requests.get(mapping_url, timeout=5).json()
-        
-        # Flatten the dynamic multi-index JSON mappings into a clean lookup table
-        lookup_rows = []
-        for index_name, stocks_list in index_data.items():
-            # Format clean, recognizable sector labels natively
-            clean_sector_name = index_name.replace("Nifty ", "Nifty ").title()
-            for symbol in stocks_list:
-                lookup_rows.append({"Symbol": str(symbol).upper(), "Sector": clean_sector_name})
-        
-        indices_df = pd.DataFrame(lookup_rows)
-        
-        # Cross-reference with Dhan's lightweight endpoint to append real-time Scrip IDs and active Lot Sizes
-        dhan_master_url = "https://dhan.co"
-        chunks = []
-        for chunk in pd.read_csv(dhan_master_url, chunksize=25000, low_memory=False):
-            df_nse = chunk[(chunk['SEM_EXCHANGE_SEGMENT'] == 'NSE_EQ') & (chunk['SEM_SERIES'] == 'EQ')].copy()
-            if not df_nse.empty:
-                df_fno = df_nse[df_nse['SEM_LOT_SIZE'].fillna(1).astype(int) > 1].copy()
-                if not df_fno.empty:
-                    chunks.append(df_fno)
-                    
-        dhan_df = pd.concat(chunks, ignore_index=True)
-        dhan_df['Symbol'] = dhan_df['SEM_TRADING_SYMBOL'].astype(str).str.upper()
-        dhan_df['ID'] = dhan_df['SEM_SMAN_SCRIP_CODE'].astype(str)
-        dhan_df['LotSize'] = dhan_df['SEM_LOT_SIZE'].astype(int)
-        
-        # Merge the files together: Combines true live broker lot sizes with automated index data
-        merged_universe = pd.merge(dhan_df[['Symbol', 'ID', 'LotSize']], indices_df, on="Symbol", how="inner")
-        return merged_universe
-        
-    except Exception:
-        # Bulletproof operational backup to keep page online if raw repository requests rate limit
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        master_url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+        resp = requests.get(master_url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        dhan_df = pd.read_csv(io.StringIO(resp.text), low_memory=False)
+
+        # --- Equity segment: live Security ID for each cash-market symbol ---
+        eq_df = dhan_df[
+            (dhan_df["SEM_EXM_EXCH_ID"] == "NSE") &
+            (dhan_df["SEM_SEGMENT"] == "E") &
+            (dhan_df["SEM_SERIES"] == "EQ")
+        ].copy()
+        eq_df["Symbol"] = eq_df["SEM_TRADING_SYMBOL"].astype(str).str.upper()
+        eq_df["ID"] = eq_df["SEM_SMST_SECURITY_ID"].astype(str)
+
+        # --- Derivatives segment: confirms which stocks actually trade F&O + their CURRENT lot size ---
+        fno_df = dhan_df[
+            (dhan_df["SEM_EXM_EXCH_ID"] == "NSE") &
+            (dhan_df["SEM_SEGMENT"] == "D") &
+            (dhan_df["SEM_INSTRUMENT_NAME"] == "FUTSTK")
+        ].copy()
+        fno_df["Symbol"] = fno_df["SEM_TRADING_SYMBOL"].astype(str).str.upper().str.split("-").str[0]
+        fno_df["LotSize"] = pd.to_numeric(fno_df["SEM_LOT_UNITS"], errors="coerce").fillna(1).astype(int)
+        if "SEM_EXPIRY_CODE" in fno_df.columns:
+            fno_df = fno_df.sort_values("SEM_EXPIRY_CODE")
+        fno_df = fno_df.drop_duplicates(subset="Symbol", keep="first")[["Symbol", "LotSize"]]
+
+        # --- Local sector/theme labels ---
+        sector_df = pd.DataFrame(
+            [{"Symbol": sym, "Sector": sector} for sym, sector in nifty_sectors.SECTOR_MAP.items()]
+        )
+
+        # Only keep symbols that are: live on Dhan's equity master AND confirmed F&O AND in our sector map
+        merged = (
+            eq_df[["Symbol", "ID"]]
+            .merge(fno_df, on="Symbol", how="inner")
+            .merge(sector_df, on="Symbol", how="inner")
+            .drop_duplicates(subset="Symbol")
+            .reset_index(drop=True)
+        )
+
+        if merged.empty:
+            raise ValueError("Merge produced zero rows - Dhan's CSV column names may have changed.")
+        return merged
+
+    except Exception as e:
+        # Surfaced visibly instead of silently falling back, so failures are obvious while testing
+        st.warning(f"⚠️ Live universe fetch failed, showing fallback list only. Reason: {e}")
         return pd.DataFrame([
             {"Symbol": "SBIN", "ID": "3045", "Sector": "Nifty Bank", "LotSize": 750},
-            {"Symbol": "HDFCBANK", "ID": "1333", "Sector": "Nifty Bank", "LotSize": 550}
+            {"Symbol": "HDFCBANK", "ID": "1333", "Sector": "Nifty Bank", "LotSize": 550},
         ])
+
 
 # Generate the complete dynamic trading dataset on startup
 master_database = fetch_dynamic_nse_fno_universe()
@@ -79,9 +104,19 @@ master_database = fetch_dynamic_nse_fno_universe()
 security_ids_list = master_database["ID"].tolist()
 live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
 
+if engine.fetcher.last_error:
+    st.warning(f"⚠️ Live quote fetch issue: {engine.fetcher.last_error}")
+
 # Overwrite display rows with real-time exchange ticks natively
 master_database["Price"] = master_database["ID"].apply(lambda x: float(live_prices_dictionary.get(str(x), 0.0)))
 master_database = master_database[master_database["Price"] > 0.0].reset_index(drop=True)
+
+if master_database.empty:
+    st.error(
+        "No live prices came back from Dhan. Common causes: market is closed, access token expired, "
+        "or Data API isn't subscribed on this Dhan account. Check the warning above for the exact reason."
+    )
+    st.stop()
 
 # Calculate true sectoral distribution tracking parameters dynamically
 sector_counts = master_database["Sector"].value_counts().to_frame().reset_index()
@@ -95,13 +130,16 @@ with left_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ THEMATIC INDUSTRY CLUSTER FILTERS & SCANNER DESK</div>", unsafe_allow_html=True)
         selected_sector = st.selectbox("Select Active Sector Theme Group:", master_database["Sector"].unique(), label_visibility="collapsed")
-        
+
         filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
         compiled_rows = []
         for _, stock in filtered_watchlist.iterrows():
             close_val = float(stock["Price"])
             atr_val = round(close_val * 0.02, 2)
-            
+
+            # NOTE: RSI/Supertrend/Trend/Momentum/Volume/Breakout/Final Callout below are still
+            # STATIC PLACEHOLDERS, not computed signals. Live price/ID/lot-size flow is now fixed;
+            # real indicator calculations (needs historical OHLC) are a separate follow-up.
             compiled_rows.append({
                 "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "RSI": 55, "Supertrend": "🟩 PASS",
                 "Trend": "PASS", "Momentum": "PASS", "Volume": "PASS", "Del Strength": "PASS", "Breakout": "YES",
@@ -114,15 +152,15 @@ with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ Active Derivatives Segment Weights</div>", unsafe_allow_html=True)
         st.dataframe(sector_counts, use_container_width=True, hide_index=True, height=130)
-        
+
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
         stock_options = filtered_watchlist["Symbol"].tolist()
-        
+
         default_index = 0
         if selected_row_data.selection and len(selected_row_data.selection.rows) > 0:
             default_index = int(next(iter(selected_row_data.selection.rows)))
-            
+
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
 # Pull target stock record cleanly out of the tracking library arrays matching current index selection states
@@ -152,7 +190,7 @@ with mtf_box:
         st.dataframe(pd.DataFrame(mtf_matrix_row), use_container_width=True, hide_index=True)
         if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
             payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
-            response = engine.place_live_order(payload)
+            response = engine.fetcher.place_live_order(payload)  # FIX: was engine.place_live_order (method didn't exist)
             st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
 
 with fno_box:
