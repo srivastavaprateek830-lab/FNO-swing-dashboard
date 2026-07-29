@@ -43,7 +43,7 @@ def download_live_nse_fno_universe():
     df_fno['ID'] = df_fno['SEM_SMAN_SCRIP_CODE'].astype(str)
     df_fno['LotSize'] = df_fno['SEM_LOT_SIZE'].astype(int)
     
-    # SYSTEM SECTOR MAPPER: Automatically groups all 180+ stocks completely by trading rules with NO manually typed names.
+    # SYSTEM SECTOR MAPPER: Automatically groups all stocks completely by trading rules with NO manually typed names.
     def auto_map_sector_baskets(row_data):
         symbol_text = str(row_data['Symbol']).upper()
         if "BANK" in symbol_text or symbol_text in ["SBIN", "PFC", "RECLTD"]:
@@ -62,8 +62,8 @@ def download_live_nse_fno_universe():
     df_fno['Sector'] = df_fno.apply(auto_map_sector_baskets, axis=1)
     return df_fno[['Symbol', 'ID', 'Sector', 'LotSize']].reset_index(drop=True)
 
-# Load full active stock tracking lists live on startup from Dhan servers
-master_database = download_live_fno_universe()
+# FIXED: Aligned function call name perfectly to resolve the NameError crash
+master_database = download_live_nse_fno_universe()
 
 # BATCH RUN MARKET QUOTES: Queries live server ticks for all tickers in your database at once
 security_ids_list = master_database["ID"].tolist()
@@ -111,7 +111,6 @@ with right_panel:
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
         stock_options = filtered_watchlist["Symbol"].tolist()
         
-        # FIXED CRASH SYNTAX: Extracted the integer out of the row array container cleanly without throwing a type error
         default_index = 0
         if selected_row_data.selection and len(selected_row_data.selection.rows) > 0:
             default_index = int(next(iter(selected_row_data.selection.rows)))
@@ -120,7 +119,7 @@ with right_panel:
 
 # Pull target stock record cleanly out of the tracking library arrays matching current index selection states
 target_stock_df = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True)
-target_stock_row = target_stock_df.iloc[0].to_dict()
+target_stock_row = target_stock_df.iloc.to_dict()
 
 current_ltp = float(target_stock_row["Price"])
 calculated_atr = current_ltp * 0.02
