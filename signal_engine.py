@@ -1,78 +1,157 @@
 import requests
-import pandas as pd
+import time
 import config
+
 
 class DhanDataFetcher:
     """PRODUCTION DATA PIPELINE: Streams real-time exchange ticks via secure broker routes."""
+
     def __init__(self):
         self.headers = {
             "client-id": str(config.DHAN_CLIENT_ID),
             "access-token": str(config.DHAN_ACCESS_TOKEN),
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         }
+        # Last error message, surfaced in the UI so failures are visible instead of silent
+        self.last_error = None
+        self._expiry_cache = {}   # {security_id: (expiry_list, fetched_at)}
+        self._chain_cache = {}    # {(security_id, expiry): (chain_rows, fetched_at)}
 
-    def fetch_live_quotes_bulk(self, security_ids: list) -> dict:
-        """Queries Dhan LTP endpoint to stream real-time price ticks in bulk."""
-        url = "https://dhan.co"
-        payload = {"instruments": [{"exchangeSegment": "NSE_EQ", "securityId": str(sid)} for sid in security_ids]}
+    def fetch_live_quotes_bulk(self, security_ids: list, exchange_segment: str = "NSE_EQ") -> dict:
+        """Queries Dhan's Market Quote LTP endpoint in bulk.
+        Dhan expects security IDs grouped BY SEGMENT, e.g. {"NSE_EQ": [11536, 3045]},
+        and returns them nested the same way. Also caps at 1000 IDs per request, so we chunk."""
+        if not security_ids:
+            return {}
+        url = f"{config.DHAN_BASE_URL}/v2/marketfeed/ltp"
+        result = {}
         try:
-            res = requests.post(url, json=payload, headers=self.headers, timeout=6)
+            for i in range(0, len(security_ids), 1000):
+                batch = [int(sid) for sid in security_ids[i:i + 1000]]
+                payload = {exchange_segment: batch}
+                res = requests.post(url, json=payload, headers=self.headers, timeout=8)
+                if res.status_code == 200:
+                    seg_data = res.json().get("data", {}).get(exchange_segment, {})
+                    for sec_id, quote in seg_data.items():
+                        result[str(sec_id)] = float(quote.get("last_price", 0.0))
+                else:
+                    self.last_error = f"LTP fetch failed: HTTP {res.status_code} - {res.text[:200]}"
+            return result
+        except Exception as e:
+            self.last_error = f"LTP fetch exception: {e}"
+            return result
+
+    def _get_nearest_expiry(self, security_id: str, underlying_seg: str):
+        """Option chain requires an explicit expiry date, fetched from a separate endpoint.
+        Cached for an hour since expiries don't change intraday."""
+        cached = self._expiry_cache.get(security_id)
+        if cached and (time.time() - cached[1] < 3600):
+            return cached[0][0] if cached[0] else None
+        try:
+            url = f"{config.DHAN_BASE_URL}/v2/optionchain/expirylist"
+            payload = {"UnderlyingScrip": int(security_id), "UnderlyingSeg": underlying_seg}
+            res = requests.post(url, json=payload, headers=self.headers, timeout=8)
             if res.status_code == 200:
-                data_list = res.json().get("data", [])
-                return {str(item['securityId']): float(item['lastTradedPrice']) for item in data_list if 'lastTradedPrice' in item}
-            return {}
-        except Exception:
-            return {}
+                expiries = res.json().get("data", [])
+                self._expiry_cache[security_id] = (expiries, time.time())
+                return expiries[0] if expiries else None
+            self.last_error = f"Expiry list fetch failed: HTTP {res.status_code} - {res.text[:200]}"
+            return None
+        except Exception as e:
+            self.last_error = f"Expiry list exception: {e}"
+            return None
 
-    def fetch_option_chain(self, underlying_symbol_id: str) -> list:
-        """Queries Dhan Option Chain API to fetch real-time derivatives grids."""
-        url = "https://dhan.co"
-        payload = {"underlyingScrip": int(underlying_symbol_id), "exchangeSegment": "NSE_FNO"}
+    def fetch_option_chain(self, underlying_symbol_id: str, underlying_seg: str = "NSE_FNO") -> list:
+        """Queries Dhan's Option Chain API. Dhan rate-limits this to 1 request / 3 seconds,
+        so results are cached for 10s to survive the dashboard's 5-second auto-refresh loop."""
+        expiry = self._get_nearest_expiry(underlying_symbol_id, underlying_seg)
+        if not expiry:
+            return []
+
+        cache_key = (underlying_symbol_id, expiry)
+        cached = self._chain_cache.get(cache_key)
+        if cached and (time.time() - cached[1] < 10):
+            return cached[0]
+
         try:
-            response = requests.post(url, json=payload, headers=self.headers, timeout=5)
-            return response.json().get("data", {}).get("optionChain", []) if response.status_code == 200 else []
-        except Exception:
+            url = f"{config.DHAN_BASE_URL}/v2/optionchain"
+            payload = {
+                "UnderlyingScrip": int(underlying_symbol_id),
+                "UnderlyingSeg": underlying_seg,
+                "Expiry": expiry,
+            }
+            res = requests.post(url, json=payload, headers=self.headers, timeout=8)
+            if res.status_code != 200:
+                self.last_error = f"Option chain fetch failed: HTTP {res.status_code} - {res.text[:200]}"
+                return []
+
+            oc_map = res.json().get("data", {}).get("oc", {})
+            rows = []
+            for strike_str, legs in oc_map.items():
+                for opt_type in ("ce", "pe"):
+                    leg = legs.get(opt_type)
+                    if leg:
+                        rows.append({
+                            "strikePrice": float(strike_str),
+                            "type": opt_type.upper(),
+                            "lastPrice": leg.get("last_price", 0.0),
+                            "securityId": leg.get("security_id"),
+                            "oi": leg.get("oi", 0),
+                            "expiryDate": expiry,
+                        })
+            self._chain_cache[cache_key] = (rows, time.time())
+            return rows
+        except Exception as e:
+            self.last_error = f"Option chain exception: {e}"
             return []
 
     def place_live_order(self, payload: dict) -> dict:
-        """Routes instance instructions directly to Dhan's instant execution matching engines."""
-        url = "https://dhan.co"
+        """Routes order instructions to Dhan's live order-execution endpoint."""
+        url = f"{config.DHAN_BASE_URL}/v2/orders"
         try:
-            return requests.post(url, json=payload, headers=self.headers, timeout=6).json()
+            res = requests.post(url, json=payload, headers=self.headers, timeout=8)
+            return res.json()
         except Exception as e:
+            self.last_error = f"Order placement exception: {e}"
             return {"status": "failure", "remarks": str(e)}
 
 
 class TradingEngine:
     """PRODUCTION LOGIC ENGINE: Computes target metrics directly from live data strings."""
+
     def __init__(self):
         self.fetcher = DhanDataFetcher()
 
     def optimize_strike_with_targets(self, underlying_symbol_id: str, current_price: float, atr: float) -> dict:
         raw_chain = self.fetcher.fetch_option_chain(underlying_symbol_id)
-        
-        if not raw_chain or len(raw_chain) == 0:
-            mock_strike = round(current_price, -2)
+
+        if not raw_chain:
+            # Option chain unavailable (market closed, rate-limited, or no F&O contract) - use a
+            # clearly-labeled estimate so it's never mistaken for a live quote.
+            mock_strike = round(current_price / 100) * 100
             mock_premium = round(current_price * 0.015, 2)
             return {
-                "strike": mock_strike, "expiry": "27-Aug-2026", "current_premium": mock_premium, "type": "CE",
+                "strike": mock_strike, "expiry": "N/A (est.)", "current_premium": mock_premium, "type": "CE",
                 "spot_sl": round(current_price - (1.5 * atr), 2), "spot_tp": round(current_price + (3.0 * atr), 2),
-                "premium_sl": round(mock_premium * 0.50, 2), "premium_tp": round(mock_premium * 2.0, 2)
+                "premium_sl": round(mock_premium * 0.50, 2), "premium_tp": round(mock_premium * 2.0, 2),
             }
 
-        df = pd.DataFrame(raw_chain)
-        optimal_row = df.iloc[len(df)//2]
-        current_premium = float(optimal_row.get('lastPrice', current_price * 0.015))
+        # Pick the Call strike nearest to the current spot price (closest to at-the-money)
+        ce_rows = [r for r in raw_chain if r["type"] == "CE"] or raw_chain
+        optimal_row = min(ce_rows, key=lambda r: abs(r["strikePrice"] - current_price))
+        current_premium = float(optimal_row.get("lastPrice") or (current_price * 0.015))
 
         return {
-            "strike": optimal_row.get('strikePrice', round(current_price, -2)),
-            "expiry": str(optimal_row.get('expiryDate', '27-Aug-2026')),
+            "strike": optimal_row["strikePrice"],
+            "expiry": optimal_row.get("expiryDate", "N/A"),
             "current_premium": current_premium, "type": "CE",
             "spot_sl": round(current_price - (1.5 * atr), 2), "spot_tp": round(current_price + (3.0 * atr), 2),
-            "premium_sl": round(current_premium * 0.50, 2), "premium_tp": round(current_premium * 2.0, 2)
+            "premium_sl": round(current_premium * 0.50, 2), "premium_tp": round(current_premium * 2.0, 2),
         }
 
-    def generate_dhan_order_payload(self, security_id: str, symbol: str, transaction_type: str, product_type: str, quantity: int = 1) -> dict:
+    def generate_dhan_order_payload(self, security_id: str, symbol: str, transaction_type: str,
+                                     product_type: str, quantity: int = 1) -> dict:
         return {
             "dhanClientId": config.DHAN_CLIENT_ID,
             "correlationId": f"terminal_{symbol.lower()}",
@@ -82,5 +161,5 @@ class TradingEngine:
             "orderType": "MARKET",
             "validity": "DAY",
             "securityId": str(security_id),
-            "quantity": int(quantity)
+            "quantity": int(quantity),
         }
