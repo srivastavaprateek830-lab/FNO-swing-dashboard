@@ -8,11 +8,15 @@ import nifty_sectors
 # Force application container to use standard compact width limits
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
-# AUTOMATIC REAL-TIME REFRESH TIMER: Silently updates data elements from Dhan every 5 seconds
-st.caption("⏳ UNIVERSAL EXCHANGE ENGINE OPERATIONAL: Streaming all active NSE F&O counters every 5 seconds...")
+# AUTOMATIC REAL-TIME REFRESH TIMER
+# NOTE: Dhan's LTP endpoint is capped at ~1 request/second. A 5-second refresh is already safe
+# for a single session, but multiple open browser tabs each running their own 5s loop can stack
+# up and trip the limit (HTTP 429). 15s keeps a comfortable safety margin while still feeling live.
+AUTO_REFRESH_SECONDS = 15
+st.caption(f"⏳ UNIVERSAL EXCHANGE ENGINE OPERATIONAL: Streaming all active NSE F&O counters every {AUTO_REFRESH_SECONDS} seconds...")
 
 
-@st.fragment(run_every=5)
+@st.fragment(run_every=AUTO_REFRESH_SECONDS)
 def enforce_auto_refresh_loop():
     st.rerun()
 
@@ -104,8 +108,10 @@ master_database = fetch_dynamic_nse_fno_universe()
 security_ids_list = master_database["ID"].tolist()
 live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
 
-if engine.fetcher.last_error:
-    st.warning(f"⚠️ Live quote fetch issue: {engine.fetcher.last_error}")
+if engine.fetcher.quotes_stale:
+    # A transient failure (e.g. rate limit) happened this cycle - we're showing the last known
+    # good prices rather than blanking the table. Only a real problem if this persists for long.
+    st.warning(f"⚠️ Showing last known prices (live refresh hit an issue): {engine.fetcher.last_error}")
 
 # Overwrite display rows with real-time exchange ticks natively
 master_database["Price"] = master_database["ID"].apply(lambda x: float(live_prices_dictionary.get(str(x), 0.0)))
@@ -113,8 +119,9 @@ master_database = master_database[master_database["Price"] > 0.0].reset_index(dr
 
 if master_database.empty:
     st.error(
-        "No live prices came back from Dhan. Common causes: market is closed, access token expired, "
-        "or Data API isn't subscribed on this Dhan account. Check the warning above for the exact reason."
+        "No live prices available yet from Dhan (not even a cached price). Common causes: market is "
+        "closed, access token expired/not rotated, or Data API isn't subscribed on this Dhan account. "
+        f"Last error: {engine.fetcher.last_error}"
     )
     st.stop()
 
