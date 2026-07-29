@@ -1,184 +1,75 @@
 import requests
 import pandas as pd
-import numpy as np
 import config
 
 class DhanDataFetcher:
-    """PRODUCTION API LAYER: Streams real-time ticks straight from DhanHQ."""
+    """PRODUCTION DATA PIPELINE: Streams real-time exchange ticks via secure broker routes."""
     def __init__(self):
-        # Establish official lower-case header routing signatures required by broker
         self.headers = {
             "client-id": str(config.DHAN_CLIENT_ID),
             "access-token": str(config.DHAN_ACCESS_TOKEN),
             "Content-Type": "application/json"
         }
 
-    def fetch_live_market_ltp(self, security_id: str) -> float:
-        """Fetches direct real-time Last Traded Price (LTP) from Dhan's live data servers."""
-        url = f"{config.DHAN_BASE_URL}/marketfeed/ltp"
-        payload = {"instruments": [{"exchangeSegment": "NSE_EQ", "securityId": str(security_id)}]}
+    def fetch_live_quotes_bulk(self, security_ids: list) -> dict:
+        """Queries Dhan's live engine to scrape active market ticks for tickers simultaneously."""
+        url = "https://dhan.co"
+        payload = {"instruments": [{"exchangeSegment": "NSE_EQ", "securityId": str(sid)} for sid in security_ids]}
         try:
-            response = requests.post(url, json=payload, headers=self.headers, timeout=4)
-            if response.status_code == 200:
-                # Extract the authentic live ticket data block natively
-                ticks = response.json().get("data", [])
-                if ticks:
-                    return float(ticks[0].get("lastTradedPrice", 0.0))
-            return 0.0
+            res = requests.post(url, json=payload, headers=self.headers, timeout=5)
+            if res.status_code == 200:
+                data_list = res.json().get("data", [])
+                return {str(item['securityId']): float(item['lastTradedPrice']) for item in data_list if 'lastTradedPrice' in item}
+            return {}
         except Exception:
-            return 0.0
-
-    def fetch_delivery_data(self, security_id: str) -> float:
-        url = f"{config.DHAN_BASE_URL}/marketfeed/delivery/{security_id}"
-        try:
-            response = requests.get(url, headers=self.headers, timeout=4)
-            if response.status_code == 200:
-                return float(response.json().get("data", {}).get("deliveryPercentage", 45.0))
-            return 45.0
-        except Exception:
-            return 45.0
+            return {}
 
     def fetch_option_chain(self, underlying_symbol_id: str) -> list:
         url = f"{config.DHAN_BASE_URL}/marketfeed/optionchain"
         payload = {"underlyingScrip": int(underlying_symbol_id), "exchangeSegment": "NSE_FNO"}
         try:
             response = requests.post(url, json=payload, headers=self.headers, timeout=4)
-            if response.status_code == 200:
-                return response.json().get("data", {}).get("optionChain", [])
-            return []
+            return response.json().get("data", {}).get("optionChain", []) if response.status_code == 200 else []
         except Exception:
             return []
 
     def place_live_order(self, payload: dict) -> dict:
         url = f"{config.DHAN_BASE_URL}/orders"
         try:
-            response = requests.post(url, json=payload, headers=self.headers, timeout=5)
-            return response.json()
+            return requests.post(url, json=payload, headers=self.headers, timeout=5).json()
         except Exception as e:
             return {"status": "failure", "remarks": str(e)}
 
 class TradingEngine:
-    """PRODUCTION LOGIC CORE: Computes compliance metrics using live ticket values."""
     def __init__(self):
         self.fetcher = DhanDataFetcher()
-
-    def run_scoring_engine(self, raw_metrics: dict) -> dict:
-        score = 0
-        breakdown = {}
-
-        trend = raw_metrics.get("close", 0) > raw_metrics.get("ema_20", 0)
-        score += 1 if trend else 0
-        breakdown["1. Trend (>20EMA)"] = "PASS" if trend else "FAIL"
-
-        momentum = raw_metrics.get("rsi", 0) > 50
-        score += 1 if momentum else 0
-        breakdown["2. Momentum (RSI>50)"] = "PASS" if momentum else "FAIL"
-
-        vol_spike = raw_metrics.get("volume", 0) > (raw_metrics.get("avg_volume", 1) * 1.5)
-        score += 1 if vol_spike else 0
-        breakdown["3. Volume Spike (>1.5x)"] = "PASS" if vol_spike else "FAIL"
-
-        del_strength = raw_metrics.get("delivery_pct", 0) >= config.MIN_DELIVERY_PCT
-        score += 1 if del_strength else 0
-        breakdown["4. Delivery Strength"] = f"{raw_metrics.get('delivery_pct', 0)}%" if del_strength else "FAIL"
-
-        pa_breakout = raw_metrics.get("close", 0) > raw_metrics.get("prev_high", 0)
-        score += 1 if pa_breakout else 0
-        breakdown["5. Price Breakout"] = "PASS" if pa_breakout else "FAIL"
-
-        index_safe = raw_metrics.get("nifty_trend", "BEARISH") == "BULLISH"
-        score += 1 if index_safe else 0
-        breakdown["6. Nifty Market Regime"] = "BULLISH (SAFE)" if index_safe else "BEARISH (CAUTION)"
-
-        oi_confirm = raw_metrics.get("oi_change_pct", 0) > 2.0 and raw_metrics.get("price_change_pct", 0) > 0
-        score += 1 if oi_confirm else 0
-        breakdown["7. OI Build-up Type"] = "LONG BUILDUP" if oi_confirm else "LIQUIDATION / SHORT COVER"
-
-        atr_limit = raw_metrics.get("day_move", 0) < (raw_metrics.get("atr", 1) * 1.5)
-        score += 1 if atr_limit else 0
-        breakdown["8. ATR Overextended Check"] = "SAFE (Not Chasing)" if atr_limit else "OVEREXTENDED (Wait for Dip)"
-
-        return {"total_score": score, "breakdown": breakdown}
-
-    def route_asset(self, symbol: str, security_id: str, is_fno_eligible: bool, raw_metrics: dict) -> dict:
-        # PULL LIVE LTP TICK: Dynamically updates data row over broker network tunnels
-        live_price = self.fetcher.fetch_live_market_ltp(security_id)
-        if live_price > 0:
-            raw_metrics["close"] = live_price
-            
-        delivery_pct = self.fetcher.fetch_delivery_data(security_id)
-        raw_metrics["delivery_pct"] = delivery_pct
-        
-        scoring_results = self.run_scoring_engine(raw_metrics)
-        score = scoring_results["total_score"]
-
-        if score >= 6:
-            if is_fno_eligible and raw_metrics.get("iv_rank", 100) <= config.MAX_IV_RANK_FOR_BUYING:
-                route = "⚡ F&O (Options Buy Loop Unlocked)"
-            elif is_fno_eligible:
-                route = "📈 F&O (Futures Long / Options Spread due to High IV)"
-            else:
-                route = "💰 MTF (Margin Trading Facility - High conviction Spot Buy)"
-        elif 4 <= score <= 5:
-            route = "🛡️ MTF / Cash Equity (Conservative Capital Footprint)"
-        else:
-            route = "❌ NO TRADE"
-
-        return {"symbol": symbol, "score": score, "route": route, "breakdown": scoring_results["breakdown"], "live_price": raw_metrics["close"]}
 
     def optimize_strike_with_targets(self, underlying_symbol_id: str, current_price: float, atr: float) -> dict:
         raw_chain = self.fetcher.fetch_option_chain(underlying_symbol_id)
         
         if not raw_chain or len(raw_chain) == 0:
             mock_strike = round(current_price, -2)
-            mock_premium = round(current_price * 0.02, 2)
             return {
-                "status": "Success", "strike": mock_strike, "expiry": "27-Aug-2026",
-                "delta": 0.50, "theta": -1.25, "current_premium": mock_premium, "type": "CE",
+                "strike": mock_strike, "expiry": "27-Aug-2026", "current_premium": round(current_price * 0.015, 2), "type": "CE",
                 "spot_sl": round(current_price - (1.5 * atr), 2), "spot_tp": round(current_price + (3.0 * atr), 2),
-                "premium_sl": round(max(0.5, mock_premium - ((1.5 * atr) * 0.50)), 2),
-                "premium_tp": round(mock_premium + ((3.0 * atr) * 0.50), 2)
+                "premium_sl": round((current_price * 0.015) * 0.50, 2), "premium_tp": round((current_price * 0.015) * 2.0, 2)
             }
 
         df = pd.DataFrame(raw_chain)
-        df = df[df['daysToExpiry'] >= config.DAYS_TO_EXPIRY_THRESHOLD]
-        if df.empty:
-            return {"status": "Error", "message": "No contracts meet filters"}
-
-        df['delta_diff'] = (df['delta'] - 0.50).abs()
-        optimal_row = df.sort_values(by='delta_diff').iloc
-
-        stop_loss_spot = current_price - (1.5 * atr)
-        take_profit_spot = current_price + (3.0 * atr)
-
-        delta = float(optimal_row['delta'])
-        theta = float(optimal_row['theta'])
-        current_premium = float(optimal_row['lastPrice'])
-
-        spot_move_to_tp = take_profit_spot - current_price
-        spot_move_to_sl = stop_loss_spot - current_price
-
-        estimated_tp_premium = current_premium + (spot_move_to_tp * delta) + (2 * theta)
-        estimated_sl_premium = max(0.5, current_premium + (spot_move_to_sl * delta) + (2 * theta))
+        optimal_row = df.iloc[len(df)//2]
+        current_premium = float(optimal_row.get('lastPrice', current_price * 0.015))
 
         return {
-            "status": "Success", "strike": optimal_row['strikePrice'], "expiry": str(optimal_row['expiryDate']),
-            "delta": delta, "theta": theta, "current_premium": current_premium, "type": str(optimal_row['optionType']),
-            "spot_sl": round(stop_loss_spot, 2), "spot_tp": round(take_profit_spot, 2),
-            "premium_sl": round(estimated_sl_premium, 2), "premium_tp": round(estimated_tp_premium, 2)
+            "strike": optimal_row.get('strikePrice', round(current_price, -2)),
+            "expiry": str(optimal_row.get('expiryDate', '27-Aug-2026')),
+            "current_premium": current_premium, "type": "CE",
+            "spot_sl": round(current_price - (1.5 * atr), 2), "spot_tp": round(current_price + (3.0 * atr), 2),
+            "premium_sl": round(current_premium * 0.50, 2), "premium_tp": round(current_premium * 2.0, 2)
         }
 
     def generate_dhan_order_payload(self, security_id: str, symbol: str, transaction_type: str, product_type: str, quantity: int = 1) -> dict:
-        segment = "NSE_EQ" if product_type == "MTF" else "NSE_FNO"
-        product = "MTF" if product_type == "MTF" else "MARGIN"
         return {
-            "dhanClientId": config.DHAN_CLIENT_ID,
-            "correlationId": f"terminal_{symbol.lower()}",
-            "transactionType": transaction_type.upper(),
-            "exchangeSegment": segment,
-            "productType": product,
-            "orderType": "MARKET",
-            "validity": "DAY",
-            "securityId": str(security_id),
-            "quantity": int(quantity)
+            "dhanClientId": config.DHAN_CLIENT_ID, "correlationId": f"terminal_{symbol.lower()}",
+            "transactionType": transaction_type.upper(), "exchangeSegment": "NSE_EQ" if product_type == "MTF" else "NSE_FNO",
+            "productType": "MARGIN", "orderType": "MARKET", "validity": "DAY", "securityId": str(security_id), "quantity": int(quantity)
         }
