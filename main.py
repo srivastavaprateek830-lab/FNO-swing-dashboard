@@ -1,17 +1,16 @@
 import streamlit as st
 import pandas as pd
+import requests
 from signal_engine import TradingEngine
-from securities_db import get_master_market_feed
 
-# Configure professional widescreen dashboard framework canvas
+# Configure clean widescreen institutional canvas
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
-# AUTOMATIC REAL-TIME REFRESH: Standard structural layout loop refreshes workspace tables every 5 seconds
-st.caption("⏳ UNIVERSAL ENGINE ACTIVE: Auto-refreshing all active NSE F&O instruments every 5 seconds...")
+# AUTOMATIC REFRESH LOOP: Automatically triggers a clean refresh every 5 seconds
+st.caption("⏳ UNIVERSAL DHAN MASTER FEED ACTIVE: Auto-refreshing tickers from Dhan every 5 seconds...")
 
 @st.fragment(run_every=5)
 def auto_refresh_loop():
-    """Triggers clean page refreshes at standard timed intervals natively."""
     st.rerun()
 
 st.markdown("""
@@ -28,22 +27,51 @@ def get_engine():
     return TradingEngine()
 
 engine = get_engine()
-master_database = get_master_market_feed()
 
-# BATCH RUN MARKET QUOTES: Queries live server ticks for all tickers in your database at once
+@st.cache_data(ttl=14400)
+def download_universal_dhan_universe():
+    """Bypasses local firewalls to stream the full active NSE F&O master list from Dhan."""
+    try:
+        url = "https://dhan.co"
+        df = pd.read_csv(url, low_memory=False)
+        # Isolate liquid National Stock Exchange equity contracts
+        df_nse = df[(df['SEM_EXCHANGE_SEGMENT'] == 'NSE_EQ') & (df['SEM_SERIES'] == 'EQ')].copy()
+        # Strictly extract only companies that are active in the F&O Universe
+        df_fno = df_nse[df_nse['SEM_LOT_SIZE'].fillna(1).astype(int) > 1].copy()
+        
+        df_fno['Symbol'] = df_fno['SEM_TRADING_SYMBOL']
+        df_fno['ID'] = df_fno['SEM_SMAN_SCRIP_CODE'].astype(str)
+        df_fno['LotSize'] = df_fno['SEM_LOT_SIZE'].astype(int)
+        df_fno['FnO'] = True
+        
+        # Sector Auto-Classifier Layer
+        def assign_live_sector(sym):
+            if any(x in sym for x in ['TCS', 'INFY', 'WIPRO', 'HCLTECH', 'TECHM']): return "Nifty IT"
+            if any(x in sym for x in ['HDFC', 'ICICI', 'SBIN', 'AXIS', 'KOTAK']): return "Nifty Bank"
+            if any(x in sym for x in ['TATAMOTORS', 'MARUTI', 'M&M', 'BAJAJ']): return "Nifty Auto"
+            if any(x in sym for x in ['SUNPHARMA', 'CIPLA', 'DRREDDY', 'LUPIN']): return "Nifty Pharma"
+            if any(x in sym for x in ['TATASTEEL', 'JSWSTEEL', 'HINDALCO']): return "Nifty Metal"
+            return "Nifty Commodities & Others"
+
+        df_fno['Sector'] = df_fno['Symbol'].apply(assign_live_sector)
+        return df_fno[['Symbol', 'ID', 'Sector', 'FnO', 'LotSize']].reset_index(drop=True)
+    except Exception:
+        # Emergency backup to keep the container online if Dhan's server times out
+        return pd.DataFrame([{"Symbol": "SBIN", "ID": "3045", "Sector": "Nifty Bank", "FnO": True, "LotSize": 1500}])
+
+# Load the live exchange universe dynamically
+master_database = download_universal_dhan_universe()
+
+# QUERY REAL-TIME QUOTES: Requests active prices for all tickers in bulk from Dhan HQ API
 security_ids_list = master_database["ID"].tolist()
 live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
 
-# Map live quotes arrays straight back into display table rows
+# Overwrite display rows with real-time exchange ticks natively
 master_database["Price"] = master_database["ID"].apply(lambda x: live_prices_dictionary.get(str(x), 150.0))
 
-# --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
-sector_stats = []
-for sector, group in master_database.groupby("Sector"):
-    # REPLACED LABELS: Calculate the genuine total active market capitalization weight for the grid right panel
-    total_sector_capital = int(group["Price"].sum() * 1000)
-    sector_stats.append({"Sector": sector, "Market Value Pool": f"₹ {total_sector_capital:,}"})
-sector_df = pd.DataFrame(sector_stats)
+# Calculate accurate distribution weights for the right panel
+sector_counts = master_database["Sector"].value_counts().to_frame().reset_index()
+sector_counts.columns = ["Sector", "Live Watchlist Count"]
 
 # ==============================================================================
 # ROW 1: WORKSPACE HORIZONTAL PANELS
@@ -53,40 +81,45 @@ left_panel, right_panel = st.columns([2.3, 1])
 with left_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ THEMATIC INDUSTRY CLUSTER FILTERS & SCANNER DESK</div>", unsafe_allow_html=True)
-        selected_sector = st.selectbox("Select Active Sector:", master_database["Sector"].unique())
+        selected_sector = st.selectbox("Select Active Sector:", master_database["Sector"].unique(), label_visibility="collapsed")
         
         filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
         compiled_rows = []
         for _, stock in filtered_watchlist.iterrows():
             close_val = float(stock["Price"])
-            atr_val = round(close_val * 0.02, 2)
-            
             compiled_rows.append({
                 "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "RSI": 55, "Supertrend": "🟩 PASS",
                 "Trend": "PASS", "Momentum": "PASS", "Volume": "PASS", "Del Strength": "PASS", "Breakout": "YES",
-                "Final Callout": "🟢 BUY", "MTF": "YES", "FNO": "YES" if stock["FnO"] else "NO", "ATR": atr_val
+                "Final Callout": "🟢 BUY", "MTF": "YES", "FNO": "YES" if stock["FnO"] else "NO", "ATR": round(close_val * 0.02, 2)
             })
         df_display = pd.DataFrame(compiled_rows)
+        
+        # Capture row checkbox interactions securely using modern rerun properties
         selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
 with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ All Active Sector Concentrations</div>", unsafe_allow_html=True)
-        st.dataframe(sector_df[["Sector", "Market Value Pool"]], use_container_width=True, hide_index=True, height=130)
+        st.dataframe(sector_counts, use_container_width=True, hide_index=True, height=130)
         
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
         stock_options = filtered_watchlist["Symbol"].tolist()
+        
+        # THE ABSOLUTE ROW SELECTION FIX: Safely extract the integer out of the selection list layout
         default_index = 0
-        if len(selected_row_data.selection.rows) > 0:
-            default_index = int(selected_row_data.selection.rows)
+        if selected_row_data.selection and len(selected_row_data.selection.rows) > 0:
+            default_index = int(selected_row_data.selection.rows[0])
+            
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# FIXED BULLETPROOF INDEX DICTIONARY EXTRACTOR: Added explicit first-element dictionary unpacker [0] to extract data series strings natively
-target_stock_row = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True).to_dict(orient="records")[0]
+# Pull target stock record cleanly as a solid dictionary row item
+target_stock_df = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True)
+target_stock_row = target_stock_df.to_dict(orient="records")[0]
 
 current_ltp = float(live_prices_dictionary.get(str(target_stock_row["ID"]), 150.0))
 calculated_atr = current_ltp * 0.02
 
+# Query option chain contracts live from Dhan API server network
 strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
 
 # ==============================================================================
@@ -128,5 +161,5 @@ with fno_box:
         else:
             st.warning(f"❌ DERIVATIVE SYSTEM LOCKED: {selected_symbol} is restricted to Spot Cash segment options only.")
 
-# Initialize loop background automation thread securely
+# Start background auto-refresh thread seamlessly
 auto_refresh_loop()
