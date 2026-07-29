@@ -51,7 +51,7 @@ left_panel, right_panel = st.columns([2.3, 1])
 with left_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ THEMATIC INDUSTRY CLUSTER FILTERS & SCANNER DESK</div>", unsafe_allow_html=True)
-        selected_sector = st.selectbox("Select Active Sector:", sector_df["Sector"].unique(), label_visibility="collapsed")
+        selected_sector = st.selectbox("Select Active Sector:", master_database["Sector"].unique())
         
         filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
         compiled_rows = []
@@ -66,7 +66,6 @@ with left_panel:
             })
         df_display = pd.DataFrame(compiled_rows)
         selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
-
 with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ All Active Sector Concentrations</div>", unsafe_allow_html=True)
@@ -77,14 +76,16 @@ with right_panel:
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
         if len(selected_row_data.selection.rows) > 0:
-            default_index = int(selected_row_data.selection.rows)
+            default_index = int(selected_row_data.selection.rows[0])
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-target_stock = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True).iloc
-current_ltp = float(live_prices_dictionary.get(str(target_stock["ID"]), 150.0))
+# FIXED BULLETPROOF DICTIONARY LOOKUP: Bypasses .iloc matrix traps completely
+target_stock_row = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True).to_dict(orient="records")[0]
+
+current_ltp = float(live_prices_dictionary.get(str(target_stock_row["ID"]), 150.0))
 calculated_atr = current_ltp * 0.02
 
-strike_details = engine.optimize_strike_with_targets(str(target_stock["ID"]), current_ltp, calculated_atr)
+strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
 
 # ==============================================================================
 # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
@@ -96,21 +97,21 @@ with mtf_box:
     with st.container(border=True):
         st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
         mtf_matrix_row = [{
-            "Asset": target_stock["Symbol"], "Spot Entry": f"₹ {current_ltp}",
+            "Asset": target_stock_row["Symbol"], "Spot Entry": f"₹ {current_ltp}",
             "Spot SL (Stop Down)": f"₹ {strike_details['spot_sl']}", "Spot TP (Target Up)": f"₹ {strike_details['spot_tp']}",
             "MTF Max Funding": "Up to 4x Leverage", "Order Units": "10 Shares"
         }]
         st.dataframe(pd.DataFrame(mtf_matrix_row), use_container_width=True, hide_index=True)
         if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
-            payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "MTF", quantity=10)
+            payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
             response = engine.fetcher.place_live_order(payload)
             st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
 
 with fno_box:
     with st.container(border=True):
         st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-        if target_stock["FnO"]:
-            official_lot_multiplier = int(target_stock["LotSize"])
+        if target_stock_row["FnO"]:
+            official_lot_multiplier = int(target_stock_row["LotSize"])
             fno_matrix_row = [{
                 "Option Strike": f"{strike_details['strike']} {strike_details['type']}", "Entry Premium": f"₹ {strike_details['current_premium']}",
                 "Premium SL": f"₹ {strike_details['premium_sl']}", "Contract Multiplier": f"{official_lot_multiplier} Shares (1 Lot)",
@@ -118,7 +119,7 @@ with fno_box:
             }]
             st.dataframe(pd.DataFrame(fno_matrix_row), use_container_width=True, hide_index=True)
             if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
-                payload = engine.generate_dhan_order_payload(target_stock["ID"], target_stock["Symbol"], "BUY", "FNO", quantity=official_lot_multiplier)
+                payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "FNO", quantity=official_lot_multiplier)
                 response = engine.fetcher.place_live_order(payload)
                 st.balloons()
                 st.success(f"Live Option Order Fired! Units: {official_lot_multiplier}. ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
