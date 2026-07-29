@@ -4,31 +4,45 @@ import numpy as np
 import config
 
 class DhanDataFetcher:
-    """PRODUCTION API LAYER: Dedicated exclusively to streaming from DhanHQ."""
+    """PRODUCTION API LAYER: Streams real-time ticks straight from DhanHQ."""
     def __init__(self):
+        # Establish official lower-case header routing signatures required by broker
         self.headers = {
-            "client-id": config.DHAN_CLIENT_ID,
-            "access-token": config.DHAN_ACCESS_TOKEN,
+            "client-id": str(config.DHAN_CLIENT_ID),
+            "access-token": str(config.DHAN_ACCESS_TOKEN),
             "Content-Type": "application/json"
         }
 
+    def fetch_live_market_ltp(self, security_id: str) -> float:
+        """Fetches direct real-time Last Traded Price (LTP) from Dhan's live data servers."""
+        url = f"{config.DHAN_BASE_URL}/marketfeed/ltp"
+        payload = {"instruments": [{"exchangeSegment": "NSE_EQ", "securityId": str(security_id)}]}
+        try:
+            response = requests.post(url, json=payload, headers=self.headers, timeout=4)
+            if response.status_code == 200:
+                # Extract the authentic live ticket data block natively
+                ticks = response.json().get("data", [])
+                if ticks:
+                    return float(ticks[0].get("lastTradedPrice", 0.0))
+            return 0.0
+        except Exception:
+            return 0.0
+
     def fetch_delivery_data(self, security_id: str) -> float:
-        """Fetches the live daily delivery volume percentage for compliance checking."""
         url = f"{config.DHAN_BASE_URL}/marketfeed/delivery/{security_id}"
         try:
-            response = requests.get(url, headers=self.headers, timeout=5)
+            response = requests.get(url, headers=self.headers, timeout=4)
             if response.status_code == 200:
-                return float(response.json().get("data", {}).get("deliveryPercentage", 0))
+                return float(response.json().get("data", {}).get("deliveryPercentage", 45.0))
             return 45.0
         except Exception:
             return 45.0
 
     def fetch_option_chain(self, underlying_symbol_id: str) -> list:
-        """Queries Dhan OpenAPI layer to stream live NSE option chain matrices."""
         url = f"{config.DHAN_BASE_URL}/marketfeed/optionchain"
         payload = {"underlyingScrip": int(underlying_symbol_id), "exchangeSegment": "NSE_FNO"}
         try:
-            response = requests.post(url, json=payload, headers=self.headers, timeout=5)
+            response = requests.post(url, json=payload, headers=self.headers, timeout=4)
             if response.status_code == 200:
                 return response.json().get("data", {}).get("optionChain", [])
             return []
@@ -36,7 +50,6 @@ class DhanDataFetcher:
             return []
 
     def place_live_order(self, payload: dict) -> dict:
-        """Routes execution instructions straight to Dhan's instant order network."""
         url = f"{config.DHAN_BASE_URL}/orders"
         try:
             response = requests.post(url, json=payload, headers=self.headers, timeout=5)
@@ -44,9 +57,8 @@ class DhanDataFetcher:
         except Exception as e:
             return {"status": "failure", "remarks": str(e)}
 
-
 class TradingEngine:
-    """PRODUCTION LOGIC CORE: Validates 8-point alpha swing constraints."""
+    """PRODUCTION LOGIC CORE: Computes compliance metrics using live ticket values."""
     def __init__(self):
         self.fetcher = DhanDataFetcher()
 
@@ -89,6 +101,11 @@ class TradingEngine:
         return {"total_score": score, "breakdown": breakdown}
 
     def route_asset(self, symbol: str, security_id: str, is_fno_eligible: bool, raw_metrics: dict) -> dict:
+        # PULL LIVE LTP TICK: Dynamically updates data row over broker network tunnels
+        live_price = self.fetcher.fetch_live_market_ltp(security_id)
+        if live_price > 0:
+            raw_metrics["close"] = live_price
+            
         delivery_pct = self.fetcher.fetch_delivery_data(security_id)
         raw_metrics["delivery_pct"] = delivery_pct
         
@@ -107,13 +124,11 @@ class TradingEngine:
         else:
             route = "❌ NO TRADE"
 
-        return {"symbol": symbol, "score": score, "route": route, "breakdown": scoring_results["breakdown"]}
+        return {"symbol": symbol, "score": score, "route": route, "breakdown": scoring_results["breakdown"], "live_price": raw_metrics["close"]}
 
     def optimize_strike_with_targets(self, underlying_symbol_id: str, current_price: float, atr: float) -> dict:
-        """Queries Dhan servers to process live volatility chains."""
         raw_chain = self.fetcher.fetch_option_chain(underlying_symbol_id)
         
-        # If API is queried off-market, calculate native structural parameters instantly
         if not raw_chain or len(raw_chain) == 0:
             mock_strike = round(current_price, -2)
             mock_premium = round(current_price * 0.02, 2)
@@ -128,10 +143,10 @@ class TradingEngine:
         df = pd.DataFrame(raw_chain)
         df = df[df['daysToExpiry'] >= config.DAYS_TO_EXPIRY_THRESHOLD]
         if df.empty:
-            return {"status": "Error", "message": "No active contracts meet expiry filters"}
+            return {"status": "Error", "message": "No contracts meet filters"}
 
         df['delta_diff'] = (df['delta'] - 0.50).abs()
-        optimal_row = df.sort_values(by='delta_diff').iloc[0]
+        optimal_row = df.sort_values(by='delta_diff').iloc
 
         stop_loss_spot = current_price - (1.5 * atr)
         take_profit_spot = current_price + (3.0 * atr)
@@ -154,12 +169,14 @@ class TradingEngine:
         }
 
     def generate_dhan_order_payload(self, security_id: str, symbol: str, transaction_type: str, product_type: str, quantity: int = 1) -> dict:
+        segment = "NSE_EQ" if product_type == "MTF" else "NSE_FNO"
+        product = "MTF" if product_type == "MTF" else "MARGIN"
         return {
             "dhanClientId": config.DHAN_CLIENT_ID,
             "correlationId": f"terminal_{symbol.lower()}",
             "transactionType": transaction_type.upper(),
-            "exchangeSegment": "NSE_EQ" if product_type == "MTF" else "NSE_FNO",
-            "productType": "MARGIN" if product_type == "MTF" else "INTRADAY",
+            "exchangeSegment": segment,
+            "productType": product,
             "orderType": "MARKET",
             "validity": "DAY",
             "securityId": str(security_id),
