@@ -18,29 +18,72 @@ class DhanDataFetcher:
         self._expiry_cache = {}   # {security_id: (expiry_list, fetched_at)}
         self._chain_cache = {}    # {(security_id, expiry): (chain_rows, fetched_at)}
 
+        # --- LTP throttling / stale-fallback state ---
+        # Dhan caps /v2/marketfeed/ltp at roughly 1 request/second. Multiple browser tabs or a
+        # too-fast auto-refresh can blow past that and get you a 429 (or a temporary block if it
+        # keeps happening). We enforce a minimum gap client-side, and on any failure we serve the
+        # last known-good prices instead of wiping the table to zero.
+        self._MIN_QUOTE_INTERVAL = 1.5   # seconds between actual calls to the LTP endpoint
+        self._last_quote_call_time = 0.0
+        self._quote_cache = {}           # {security_id: last_known_price}
+        self.quotes_stale = False        # True when the UI is showing cached, not fresh, prices
+
     def fetch_live_quotes_bulk(self, security_ids: list, exchange_segment: str = "NSE_EQ") -> dict:
         """Queries Dhan's Market Quote LTP endpoint in bulk.
         Dhan expects security IDs grouped BY SEGMENT, e.g. {"NSE_EQ": [11536, 3045]},
         and returns them nested the same way. Also caps at 1000 IDs per request, so we chunk."""
         if not security_ids:
             return {}
+
+        ids_str = [str(sid) for sid in security_ids]
+
+        # Client-side throttle: if we called this too recently, don't risk another 429 -
+        # just serve whatever we last successfully fetched.
+        now = time.monotonic()
+        if now - self._last_quote_call_time < self._MIN_QUOTE_INTERVAL:
+            self.quotes_stale = True
+            return {sid: self._quote_cache[sid] for sid in ids_str if sid in self._quote_cache}
+
         url = f"{config.DHAN_BASE_URL}/v2/marketfeed/ltp"
         result = {}
+        had_failure = False
         try:
             for i in range(0, len(security_ids), 1000):
                 batch = [int(sid) for sid in security_ids[i:i + 1000]]
                 payload = {exchange_segment: batch}
                 res = requests.post(url, json=payload, headers=self.headers, timeout=8)
+                self._last_quote_call_time = time.monotonic()
+
                 if res.status_code == 200:
                     seg_data = res.json().get("data", {}).get(exchange_segment, {})
                     for sec_id, quote in seg_data.items():
-                        result[str(sec_id)] = float(quote.get("last_price", 0.0))
+                        price = float(quote.get("last_price", 0.0))
+                        result[str(sec_id)] = price
+                        self._quote_cache[str(sec_id)] = price
+                elif res.status_code == 429:
+                    self.last_error = (
+                        f"Rate limited (429) by Dhan's LTP endpoint - {res.text[:200]}. "
+                        "Close any duplicate browser tabs/sessions running this app."
+                    )
+                    had_failure = True
                 else:
                     self.last_error = f"LTP fetch failed: HTTP {res.status_code} - {res.text[:200]}"
-            return result
+                    had_failure = True
         except Exception as e:
             self.last_error = f"LTP fetch exception: {e}"
-            return result
+            had_failure = True
+
+        if had_failure:
+            self.quotes_stale = True
+            # Backfill anything missing this cycle from the last known good price, so a
+            # transient rate-limit doesn't zero out the whole table.
+            for sid in ids_str:
+                if sid not in result and sid in self._quote_cache:
+                    result[sid] = self._quote_cache[sid]
+        else:
+            self.quotes_stale = False
+
+        return result
 
     def _get_nearest_expiry(self, security_id: str, underlying_seg: str):
         """Option chain requires an explicit expiry date, fetched from a separate endpoint.
