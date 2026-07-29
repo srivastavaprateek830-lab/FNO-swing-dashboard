@@ -6,9 +6,13 @@ from securities_db import get_master_market_feed
 # Configure professional widescreen dashboard framework canvas
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
-# AUTOMATIC REAL-TIME REFRESH: Forces the platform to fetch live ticks from Dhan every 5 seconds
+# AUTOMATIC REAL-TIME REFRESH: Standard structural layout loop refreshes workspace tables every 5 seconds
 st.caption("⏳ UNIVERSAL ENGINE ACTIVE: Auto-refreshing all active NSE F&O instruments every 5 seconds...")
-st.fragment(run_every=5)(lambda: st.rerun())()
+
+@st.fragment(run_every=5)
+def auto_refresh_loop():
+    """Triggers clean page refreshes at standard timed intervals natively."""
+    st.rerun()
 
 st.markdown("""
 <style>
@@ -31,7 +35,7 @@ security_ids_list = master_database["ID"].tolist()
 live_prices_dictionary = engine.fetcher.fetch_live_quotes_bulk(security_ids_list)
 
 # Map live quotes arrays straight back into display table rows
-master_database["Price"] = master_database["ID"].apply(lambda x: live_prices_dictionary.get(str(x), 100.0))
+master_database["Price"] = master_database["ID"].apply(lambda x: live_prices_dictionary.get(str(x), 150.0))
 
 # --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
 sector_stats = []
@@ -62,6 +66,7 @@ with left_panel:
             })
         df_display = pd.DataFrame(compiled_rows)
         selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
+
 with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ All Active Sector Concentrations</div>", unsafe_allow_html=True)
@@ -119,3 +124,6 @@ with fno_box:
                 st.success(f"Live Option Order Fired! Units: {official_lot_multiplier}. ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
         else:
             st.warning(f"❌ DERIVATIVE SYSTEM LOCKED: {selected_symbol} is restricted to Spot Cash segment options only.")
+
+# Initialize loop background automation thread securely
+auto_refresh_loop()
