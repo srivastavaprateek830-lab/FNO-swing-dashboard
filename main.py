@@ -3,13 +3,12 @@ import pandas as pd
 from signal_engine import TradingEngine
 from securities_db import get_master_market_feed
 
-# Configure professional widescreen dashboard
+# Configure professional widescreen dashboard framework canvas
 st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
 
-# AUTOMATIC REAL-TIME AUTO-REFRESH TIMER: Forces tables to update data elements every 10 seconds
-st.logo("https://dhan.co")
-st.caption("⏳ UNIVERSAL ENGINE LIVE: Auto-refreshing all active NSE F&O instruments every 10 seconds...")
-st.fragment(run_every=10)(lambda: st.rerun())()
+# AUTOMATIC REAL-TIME REFRESH: Forces the platform to fetch live ticks from Dhan every 5 seconds
+st.caption("⏳ UNIVERSAL ENGINE ACTIVE: Auto-refreshing all active NSE F&O instruments every 5 seconds...")
+st.fragment(run_every=5)(lambda: st.rerun())()
 
 st.markdown("""
 <style>
@@ -63,7 +62,6 @@ with left_panel:
             })
         df_display = pd.DataFrame(compiled_rows)
         selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
-
 with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ All Active Sector Concentrations</div>", unsafe_allow_html=True)
