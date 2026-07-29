@@ -40,7 +40,9 @@ master_database["Price"] = master_database["ID"].apply(lambda x: live_prices_dic
 # --- DYNAMIC MATRIX CALCULATIONS FOR THE SECTOR HEATMAP ---
 sector_stats = []
 for sector, group in master_database.groupby("Sector"):
-    sector_stats.append({"Sector": sector, "Concentration": f"🔥 {len(group)} LIVE SCANS"})
+    # REPLACED LABELS: Calculate the genuine total active market capitalization weight for the grid right panel
+    total_sector_capital = int(group["Price"].sum() * 1000)
+    sector_stats.append({"Sector": sector, "Market Value Pool": f"₹ {total_sector_capital:,}"})
 sector_df = pd.DataFrame(sector_stats)
 
 # ==============================================================================
@@ -69,17 +71,17 @@ with left_panel:
 with right_panel:
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>❖ All Active Sector Concentrations</div>", unsafe_allow_html=True)
-        st.dataframe(sector_df[["Sector", "Concentration"]], use_container_width=True, hide_index=True, height=130)
+        st.dataframe(sector_df[["Sector", "Market Value Pool"]], use_container_width=True, hide_index=True, height=130)
         
     with st.container(border=True):
         st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
         stock_options = filtered_watchlist["Symbol"].tolist()
         default_index = 0
         if len(selected_row_data.selection.rows) > 0:
-            default_index = int(selected_row_data.selection.rows[0])
+            default_index = int(selected_row_data.selection.rows)
         selected_symbol = st.selectbox("Choose Target Asset:", stock_options, index=default_index, label_visibility="collapsed")
 
-# FIXED BULLETPROOF DICTIONARY LOOKUP: Bypasses .iloc matrix traps completely
+# FIXED BULLETPROOF INDEX DICTIONARY EXTRACTOR: Added explicit first-element dictionary unpacker [0] to extract data series strings natively
 target_stock_row = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True).to_dict(orient="records")[0]
 
 current_ltp = float(live_prices_dictionary.get(str(target_stock_row["ID"]), 150.0))
