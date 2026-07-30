@@ -161,9 +161,14 @@ def live_dashboard(master_database):
         .sort_values("Avg % Chg", ascending=False)
     )
     sector_perf["Avg % Chg"] = sector_perf["Avg % Chg"].round(2)
-    sector_perf_styled = sector_perf.style.format({"Avg % Chg": "{:+.2f}%"}).applymap(
-        lambda v: f"color: {'#2ecc71' if v >= 0 else '#e74c3c'}", subset=["Avg % Chg"]
-    )
+    _color_fn = lambda v: f"color: {'#2ecc71' if v >= 0 else '#e74c3c'}"
+    _styler = sector_perf.style.format({"Avg % Chg": "{:+.2f}%"})
+    # pandas renamed Styler.applymap -> Styler.map in 2.1, then removed the old name later -
+    # try the new name first, fall back to the old one so this works across pandas versions.
+    if hasattr(_styler, "map"):
+        sector_perf_styled = _styler.map(_color_fn, subset=["Avg % Chg"])
+    else:
+        sector_perf_styled = _styler.applymap(_color_fn, subset=["Avg % Chg"])
 
     # ==============================================================================
     # ROW 1: WORKSPACE HORIZONTAL PANELS
