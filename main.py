@@ -205,9 +205,11 @@ def live_dashboard(master_database):
         return
 
     # ==============================================================================
-    # ROW 1: FULL FNO UNIVERSE SCANNER (no sector filter - every F&O stock, one long list)
+    # LAYOUT: wide FNO Universe Scanner on the left (full height), narrow stacked
+    # column on the right (Active Selection / Gauge / MTF / F&O) - matches the
+    # "Required UI View" mockup.
     # ==============================================================================
-    left_panel, right_panel = st.columns([2.3, 1])
+    left_panel, right_panel = st.columns([3.4, 1])
 
     with left_panel:
         with st.container(border=True):
@@ -238,26 +240,38 @@ def live_dashboard(master_database):
             df_display_visible = df_display.drop(columns=["_score"])
 
             selected_row_data = st.dataframe(
-                df_display_visible, use_container_width=True, hide_index=True, height=520,
-                on_select="rerun", selection_mode="single-row",
+                df_display_visible, use_container_width=True, hide_index=True, height=740,
+                on_select="rerun", selection_mode="single-row", key="fno_scanner_df",
             )
 
     with right_panel:
+        all_symbols_ranked = df_display["Ticker"].tolist()
+        symbol_key = "selected_symbol"
+        last_idx_key = "selected_symbol_last_row_idx"
+
+        if symbol_key not in st.session_state or st.session_state[symbol_key] not in all_symbols_ranked:
+            # Default to the top-ranked (highest confidence) stock if nothing picked yet, or if
+            # the previously-selected symbol dropped out of the universe entirely.
+            st.session_state[symbol_key] = all_symbols_ranked[0] if all_symbols_ranked else None
+
+        # --- Selection sync fix ---
+        # The scanner re-sorts by confidence every refresh cycle, so a stock's row INDEX shifts
+        # over time even without a new click. Streamlit's dataframe selection persists by index,
+        # not by symbol - so re-resolving the symbol from that index on every single cycle (as
+        # before) meant a routine re-sort would silently swap in whatever symbol now sits at that
+        # old index. Fix: only re-resolve when the reported index has actually CHANGED since we
+        # last processed it (i.e. a genuinely new click) - otherwise leave the current pick alone.
+        current_rows = selected_row_data.selection.rows if selected_row_data.selection else []
+        if current_rows:
+            row_idx = int(current_rows[0])
+            if row_idx != st.session_state.get(last_idx_key) and row_idx < len(df_display):
+                st.session_state[symbol_key] = df_display.iloc[row_idx]["Ticker"]
+            st.session_state[last_idx_key] = row_idx
+
+        selected_symbol = st.session_state[symbol_key]
+
         with st.container(border=True):
             st.markdown("<div class='matrix-title'>🎯 Active Selection</div>", unsafe_allow_html=True)
-
-            all_symbols_ranked = df_display["Ticker"].tolist()
-            symbol_key = "selected_symbol"
-            if symbol_key not in st.session_state or st.session_state[symbol_key] not in all_symbols_ranked:
-                # Default to the top-ranked (highest confidence) stock if nothing picked yet
-                st.session_state[symbol_key] = all_symbols_ranked[0] if all_symbols_ranked else None
-
-            if selected_row_data.selection and len(selected_row_data.selection.rows) > 0:
-                row_idx = int(next(iter(selected_row_data.selection.rows)))
-                if row_idx < len(df_display):
-                    st.session_state[symbol_key] = df_display.iloc[row_idx]["Ticker"]
-
-            selected_symbol = st.session_state[symbol_key]
             st.markdown(f"<div class='active-selection-box'>{selected_symbol}</div>", unsafe_allow_html=True)
             st.caption("Click any row in the scanner to change this.")
 
@@ -270,23 +284,16 @@ def live_dashboard(master_database):
             plt.close(fig)
             st.caption("Composite of Trend / Momentum / Volume / Breakout / Supertrend. Not investment advice.")
 
-    # Pull target stock record for the MTF/FNO panels below
-    target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
-    if target_stock_df.empty:
-        return
-    target_stock_row = target_stock_df.iloc[0].to_dict()
+        # Pull target stock record for the MTF/FNO panels below
+        target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
+        if target_stock_df.empty:
+            return
+        target_stock_row = target_stock_df.iloc[0].to_dict()
 
-    current_ltp = float(target_stock_row["Price"])
-    calculated_atr = current_ltp * 0.02
-    strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
+        current_ltp = float(target_stock_row["Price"])
+        calculated_atr = current_ltp * 0.02
+        strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
 
-    # ==============================================================================
-    # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
-    # ==============================================================================
-    st.markdown("<hr style='margin-top:0.2rem;margin-bottom:0.4rem;'>", unsafe_allow_html=True)
-    mtf_box, fno_box = st.columns(2)
-
-    with mtf_box:
         with st.container(border=True):
             st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
             mtf_matrix_row = [{
@@ -300,7 +307,6 @@ def live_dashboard(master_database):
                 response = engine.fetcher.place_live_order(payload)
                 st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
 
-    with fno_box:
         with st.container(border=True):
             st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
             official_lot_multiplier = int(target_stock_row["LotSize"])
