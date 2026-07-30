@@ -31,13 +31,18 @@ with st.sidebar:
         "Scanner panel width", min_value=50, max_value=85, value=77, step=1,
         help="Shrink this to give the Active Selection / Gauge / MTF / F&O column more room.",
     )
-    table_font_px = st.slider(
-        "Table font size (px)", min_value=8, max_value=16, value=11, step=1,
-        help="Applies to every data table across the dashboard.",
+    compact_columns = st.checkbox(
+        "Compact scanner columns", value=True,
+        help="Narrows every scanner column to reduce wasted header space.",
     )
     scanner_height_px = st.slider(
         "Scanner panel height (px)", min_value=400, max_value=1200, value=740, step=20,
         help="How tall the FNO Universe Scanner list is before it scrolls internally.",
+    )
+    st.caption(
+        "Note: Streamlit's table font size and row height are hardcoded in its frontend "
+        "(rendered on a canvas, not real text) - there's no supported way to shrink those "
+        "directly, so this doesn't offer a font-size slider that wouldn't actually do anything."
     )
 
 if auto_refresh_enabled:
@@ -45,17 +50,16 @@ if auto_refresh_enabled:
 else:
     st.caption("⏸️ Auto-refresh is OFF. Use 'Refresh Now' in the sidebar to pull live data on demand.")
 
-st.markdown(f"""
+st.markdown("""
 <style>
-    .block-container {{ padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }}
-    div[data-testid="stVerticalBlock"] > div {{ padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }}
-    .stDataFrame div {{ font-size: {table_font_px}px !important; }}
-    .matrix-title {{ font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }}
-    .active-selection-box {{
-        font-family: monospace; font-size: 22px; font-weight: bold; color: #FFFFFF;
+    .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
+    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
+    .matrix-title { font-family: monospace; font-size: 12px; font-weight: bold; color: #FF9900; margin-bottom: 2px; }
+    .active-selection-box {
+        font-family: monospace; font-size: 16px; font-weight: bold; color: #FFFFFF;
         background-color: #1a1c23; border: 1px solid #333; border-radius: 6px;
-        padding: 10px 14px; text-align: center;
-    }}
+        padding: 6px 10px; text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -93,8 +97,9 @@ def dot(pass_value) -> str:
 
 def draw_confidence_gauge(score: int, label: str):
     """Speedometer-style gauge with a real pointing needle, rendered with matplotlib
-    (tested directly in development to confirm the needle angle lines up with the bands)."""
-    fig, ax = plt.subplots(figsize=(4, 2.6), subplot_kw={"aspect": "equal"})
+    (tested directly in development to confirm the needle angle lines up with the bands).
+    Kept deliberately compact so it doesn't push the MTF/F&O panels below the fold."""
+    fig, ax = plt.subplots(figsize=(2.6, 1.7), subplot_kw={"aspect": "equal"})
     fig.patch.set_facecolor("#0e1117")
     ax.set_facecolor("#0e1117")
 
@@ -110,15 +115,15 @@ def draw_confidence_gauge(score: int, label: str):
     angle_rad = math.radians(180 - (score / 100) * 180)
     needle_len = 0.82
     x_tip, y_tip = needle_len * math.cos(angle_rad), needle_len * math.sin(angle_rad)
-    ax.plot([0, x_tip], [0, y_tip], color="white", linewidth=3, solid_capstyle="round", zorder=5)
+    ax.plot([0, x_tip], [0, y_tip], color="white", linewidth=2.5, solid_capstyle="round", zorder=5)
     ax.add_patch(mpatches.Circle((0, 0), 0.06, facecolor="white", edgecolor="white", zorder=6))
 
     ax.set_xlim(-1.15, 1.15)
     ax.set_ylim(-0.15, 1.15)
     ax.axis("off")
-    ax.text(0, -0.05, label, ha="center", va="top", fontsize=13, fontweight="bold", color="white")
-    ax.text(0, 0.45, f"{score}%", ha="center", va="center", fontsize=20, fontweight="bold", color="white")
-    fig.tight_layout()
+    ax.text(0, -0.05, label, ha="center", va="top", fontsize=10, fontweight="bold", color="white")
+    ax.text(0, 0.45, f"{score}%", ha="center", va="center", fontsize=15, fontweight="bold", color="white")
+    fig.tight_layout(pad=0.3)
     return fig
 
 
@@ -232,11 +237,11 @@ def live_dashboard(master_database):
                     callout_label, _ = score_to_label(sig["score"])
 
                     compiled_rows.append({
-                        "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "% Chg": f"{stock['PctChg']:+.2f}%",
+                        "Ticker": stock["Symbol"], "LTP": f"₹ {close_val}", "% Chg": f"{stock['PctChg']:+.2f}%",
                         "RSI": sig["rsi"] if sig["rsi"] is not None else "N/A",
                         "Supertrend": dot(sig["supertrend"]), "Trend": dot(sig["trend"]),
                         "Momentum": dot(sig["momentum"]), "Volume": dot(sig["volume"]),
-                        "Breakout": dot(sig["breakout"]), "Final Callout": callout_label,
+                        "Breakout": dot(sig["breakout"]), "Signal": callout_label,
                         "MTF": "YES", "FNO": "YES", "ATR": atr_val, "_score": sig["score"],
                     })
 
@@ -244,9 +249,23 @@ def live_dashboard(master_database):
             scores_by_symbol = dict(zip(df_display["Ticker"], df_display["_score"]))
             df_display_visible = df_display.drop(columns=["_score"])
 
+            # Real, supported way to reduce wasted per-column space: explicit width config
+            # (unlike font-size, Streamlit's dataframe DOES respect this).
+            if compact_columns:
+                narrow = st.column_config.Column(width="small")
+                col_config = {
+                    "Ticker": narrow, "LTP": narrow, "% Chg": narrow, "RSI": narrow,
+                    "Supertrend": narrow, "Trend": narrow, "Momentum": narrow, "Volume": narrow,
+                    "Breakout": narrow, "MTF": narrow, "FNO": narrow, "ATR": narrow,
+                    "Signal": st.column_config.Column(width="medium"),
+                }
+            else:
+                col_config = None
+
             selected_row_data = st.dataframe(
                 df_display_visible, use_container_width=True, hide_index=True, height=scanner_height_px,
                 on_select="rerun", selection_mode="single-row", key="fno_scanner_df",
+                column_config=col_config,
             )
 
     with right_panel:
