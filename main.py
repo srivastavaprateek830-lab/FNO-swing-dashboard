@@ -1,13 +1,17 @@
 import io
+import math
 import streamlit as st
 import pandas as pd
 import requests
-import plotly.graph_objects as go
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from signal_engine import TradingEngine
 import nifty_sectors
 
 # Force application container to use standard compact width limits
-st.set_page_config(page_title="Thematic Swing Terminal", layout="wide")
+st.set_page_config(page_title="FNO Universe Scanner", layout="wide")
 
 # How often the live panel refreshes itself, in seconds.
 # Change this single number to slow it down further (e.g. 60 for once a minute).
@@ -33,6 +37,20 @@ st.markdown("""
     div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .stDataFrame div { font-size: 11px !important; }
     .matrix-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }
+    .active-selection-box {
+        font-family: monospace; font-size: 22px; font-weight: bold; color: #FFFFFF;
+        background-color: #1a1c23; border: 1px solid #333; border-radius: 6px;
+        padding: 10px 14px; text-align: center;
+    }
+    /* Floating adjustable block sizing: drag the bottom-right corner of any bordered panel
+       to resize it manually. This is a native browser resize handle, not a drag-reposition
+       grid - each panel can be made bigger/smaller in place. */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        resize: both;
+        overflow: auto;
+        min-width: 260px;
+        min-height: 120px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -46,22 +64,64 @@ engine = get_engine()
 
 
 def score_to_label(score: int):
-    """Maps a 0-100 composite signal score to a callout label + gauge color band."""
-    if score >= 75:
+    """Maps a 0-100 composite signal score to a 5-tier buy/sell label + gauge color."""
+    if score >= 80:
         return "🟢 STRONG BUY", "#1a9c4b"
-    elif score >= 50:
-        return "🟢 BUY", "#8bc34a"
-    elif score >= 25:
-        return "🟠 WEAK", "#ff9800"
+    elif score >= 60:
+        return "🟩 BUY", "#8bc34a"
+    elif score >= 40:
+        return "🟡 NEUTRAL", "#ffd54f"
+    elif score >= 20:
+        return "🟠 SELL", "#ff9800"
     else:
-        return "🔴 AVOID", "#e53935"
+        return "🔴 STRONG SELL", "#e53935"
+
+
+def dot(pass_value) -> str:
+    """Converts a PASS/FAIL/YES/NO/N-A style value into a colored dot indicator."""
+    if pass_value in ("PASS", "YES"):
+        return "🟢"
+    elif pass_value in ("FAIL", "NO"):
+        return "🔴"
+    return "⚪"
+
+
+def draw_confidence_gauge(score: int, label: str):
+    """Speedometer-style gauge with a real pointing needle, rendered with matplotlib
+    (tested directly in development to confirm the needle angle lines up with the bands)."""
+    fig, ax = plt.subplots(figsize=(4, 2.6), subplot_kw={"aspect": "equal"})
+    fig.patch.set_facecolor("#0e1117")
+    ax.set_facecolor("#0e1117")
+
+    bands = [
+        (0, 20, "#e53935"), (20, 40, "#ff9800"), (40, 60, "#ffd54f"),
+        (60, 80, "#8bc34a"), (80, 100, "#1a9c4b"),
+    ]
+    for lo, hi, color in bands:
+        theta1 = 180 - (hi / 100) * 180
+        theta2 = 180 - (lo / 100) * 180
+        ax.add_patch(mpatches.Wedge((0, 0), 1.0, theta1, theta2, width=0.35, facecolor=color, edgecolor="#0e1117", linewidth=1))
+
+    angle_rad = math.radians(180 - (score / 100) * 180)
+    needle_len = 0.82
+    x_tip, y_tip = needle_len * math.cos(angle_rad), needle_len * math.sin(angle_rad)
+    ax.plot([0, x_tip], [0, y_tip], color="white", linewidth=3, solid_capstyle="round", zorder=5)
+    ax.add_patch(mpatches.Circle((0, 0), 0.06, facecolor="white", edgecolor="white", zorder=6))
+
+    ax.set_xlim(-1.15, 1.15)
+    ax.set_ylim(-0.15, 1.15)
+    ax.axis("off")
+    ax.text(0, -0.05, label, ha="center", va="top", fontsize=13, fontweight="bold", color="white")
+    ax.text(0, 0.45, f"{score}%", ha="center", va="center", fontsize=20, fontweight="bold", color="white")
+    fig.tight_layout()
+    return fig
 
 
 @st.cache_data(ttl=14400)
 def fetch_dynamic_nse_fno_universe():
     """Builds the live F&O stock universe by combining:
       - Dhan's official instrument master CSV -> live Security IDs + CURRENT lot sizes
-      - A local static sector/theme map (nifty_sectors.py) -> just for the UI grouping label
+      - A local static sector/theme map (nifty_sectors.py) -> kept only for internal reference
     Security IDs and lot sizes always come live from Dhan, never hardcoded, since a wrong
     lot size feeding into a real order is a money-risk, not just a cosmetic bug.
     This is cached for 4 hours - it does NOT re-run on every refresh cycle."""
@@ -72,7 +132,6 @@ def fetch_dynamic_nse_fno_universe():
         resp.raise_for_status()
         dhan_df = pd.read_csv(io.StringIO(resp.text), low_memory=False)
 
-        # --- Equity segment: live Security ID for each cash-market symbol ---
         eq_df = dhan_df[
             (dhan_df["SEM_EXM_EXCH_ID"] == "NSE") &
             (dhan_df["SEM_SEGMENT"] == "E") &
@@ -81,7 +140,6 @@ def fetch_dynamic_nse_fno_universe():
         eq_df["Symbol"] = eq_df["SEM_TRADING_SYMBOL"].astype(str).str.upper()
         eq_df["ID"] = eq_df["SEM_SMST_SECURITY_ID"].astype(str)
 
-        # --- Derivatives segment: confirms which stocks actually trade F&O + their CURRENT lot size ---
         fno_df = dhan_df[
             (dhan_df["SEM_EXM_EXCH_ID"] == "NSE") &
             (dhan_df["SEM_SEGMENT"] == "D") &
@@ -93,12 +151,10 @@ def fetch_dynamic_nse_fno_universe():
             fno_df = fno_df.sort_values("SEM_EXPIRY_CODE")
         fno_df = fno_df.drop_duplicates(subset="Symbol", keep="first")[["Symbol", "LotSize"]]
 
-        # --- Local sector/theme labels ---
         sector_df = pd.DataFrame(
             [{"Symbol": sym, "Sector": sector} for sym, sector in nifty_sectors.SECTOR_MAP.items()]
         )
 
-        # Only keep symbols that are: live on Dhan's equity master AND confirmed F&O AND in our sector map
         merged = (
             eq_df[["Symbol", "ID"]]
             .merge(fno_df, on="Symbol", how="inner")
@@ -112,7 +168,6 @@ def fetch_dynamic_nse_fno_universe():
         return merged
 
     except Exception as e:
-        # Surfaced visibly instead of silently falling back, so failures are obvious while testing
         st.warning(f"⚠️ Live universe fetch failed, showing fallback list only. Reason: {e}")
         return pd.DataFrame([
             {"Symbol": "SBIN", "ID": "3045", "Sector": "Nifty Bank", "LotSize": 750},
@@ -120,19 +175,16 @@ def fetch_dynamic_nse_fno_universe():
         ])
 
 
-# Built once (cached 4h) - the stock universe itself doesn't need to redraw every refresh cycle
 static_universe = fetch_dynamic_nse_fno_universe()
 
 
 # ==============================================================================
-# EVERYTHING BELOW THIS POINT LIVES INSIDE ONE FRAGMENT.
-# That means: (a) run_every re-executes ONLY this function on a timer, not the whole
-# page - no full-dashboard flicker, and (b) clicking the selectbox, dataframe row, or
-# Fire buttons inside it also only reruns this fragment, not the whole app.
+# EVERYTHING BELOW THIS POINT LIVES INSIDE ONE FRAGMENT - run_every re-executes ONLY
+# this function on a timer, and widget clicks inside it also only rerun this fragment,
+# not the whole page.
 # ==============================================================================
 @st.fragment(run_every=AUTO_REFRESH_SECONDS if auto_refresh_enabled else None)
 def live_dashboard(master_database):
-    # Single batched call gets us BOTH live price and previous close (for %chg) at once.
     security_ids_list = master_database["ID"].tolist()
     quotes = engine.fetcher.fetch_quotes_bulk(security_ids_list)
 
@@ -152,124 +204,81 @@ def live_dashboard(master_database):
         )
         return
 
-    # Sector performance today: equal-weighted average %chg across this dashboard's F&O
-    # constituents per sector (not NSE's official weighted index value, just our own universe).
-    sector_perf = (
-        master_database.groupby("Sector")
-        .agg(**{"Live Ticker Count": ("Symbol", "count"), "Avg % Chg": ("PctChg", "mean")})
-        .reset_index()
-        .sort_values("Avg % Chg", ascending=False)
-    )
-    sector_perf["Avg % Chg"] = sector_perf["Avg % Chg"].round(2)
-    _color_fn = lambda v: f"color: {'#2ecc71' if v >= 0 else '#e74c3c'}"
-    _styler = sector_perf.style.format({"Avg % Chg": "{:+.2f}%"})
-    # pandas renamed Styler.applymap -> Styler.map in 2.1, then removed the old name later -
-    # try the new name first, fall back to the old one so this works across pandas versions.
-    if hasattr(_styler, "map"):
-        sector_perf_styled = _styler.map(_color_fn, subset=["Avg % Chg"])
-    else:
-        sector_perf_styled = _styler.applymap(_color_fn, subset=["Avg % Chg"])
-
     # ==============================================================================
-    # ROW 1: WORKSPACE HORIZONTAL PANELS
+    # ROW 1: FULL FNO UNIVERSE SCANNER (no sector filter - every F&O stock, one long list)
     # ==============================================================================
     left_panel, right_panel = st.columns([2.3, 1])
 
     with left_panel:
         with st.container(border=True):
-            st.markdown("<div class='matrix-title'>❖ THEMATIC INDUSTRY CLUSTER FILTERS & SCANNER DESK</div>", unsafe_allow_html=True)
-            selected_sector = st.selectbox("Select Active Sector Theme Group:", master_database["Sector"].unique(), label_visibility="collapsed")
+            st.markdown("<div class='matrix-title'>❖ FNO UNIVERSE SCANNER</div>", unsafe_allow_html=True)
 
-            filtered_watchlist = master_database[master_database["Sector"] == selected_sector].reset_index(drop=True)
-
-            # Real indicator computation per stock (historical candles cached 6h per symbol,
-            # so this is only slow the first time a sector is opened - after that it's instant).
+            # Real indicator computation per stock. Historical candles are cached 6h per symbol
+            # and shared across all users, so this is only slow the very first time - after that
+            # it's instant. First load of the FULL universe can take a while; a spinner shows why.
             compiled_rows = []
-            scores_by_symbol = {}
-            for _, stock in filtered_watchlist.iterrows():
-                close_val = float(stock["Price"])
-                atr_val = round(close_val * 0.02, 2)
-                sig = engine.fetcher.compute_indicator_signals(str(stock["ID"]), close_val)
-                scores_by_symbol[stock["Symbol"]] = sig["score"]
-                callout_label, _ = score_to_label(sig["score"])
+            with st.spinner("Computing live signals across the full F&O universe (first load only)..."):
+                for _, stock in master_database.iterrows():
+                    close_val = float(stock["Price"])
+                    atr_val = round(close_val * 0.02, 2)
+                    sig = engine.fetcher.compute_indicator_signals(str(stock["ID"]), close_val)
+                    callout_label, _ = score_to_label(sig["score"])
 
-                compiled_rows.append({
-                    "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "% Chg": f"{stock['PctChg']:+.2f}%",
-                    "RSI": sig["rsi"] if sig["rsi"] is not None else "N/A",
-                    "Supertrend": sig["supertrend"], "Trend": sig["trend"], "Momentum": sig["momentum"],
-                    "Volume": sig["volume"], "Del Strength": "N/A", "Breakout": sig["breakout"],
-                    "Final Callout": callout_label, "MTF": "YES", "FNO": "YES", "ATR": atr_val,
-                })
-            df_display = pd.DataFrame(compiled_rows)
-            selected_row_data = st.dataframe(df_display, use_container_width=True, hide_index=True, height=180, on_select="rerun", selection_mode="single-row")
+                    compiled_rows.append({
+                        "Ticker": stock["Symbol"], "LTP (LIVE)": f"₹ {close_val}", "% Chg": f"{stock['PctChg']:+.2f}%",
+                        "RSI": sig["rsi"] if sig["rsi"] is not None else "N/A",
+                        "Supertrend": dot(sig["supertrend"]), "Trend": dot(sig["trend"]),
+                        "Momentum": dot(sig["momentum"]), "Volume": dot(sig["volume"]),
+                        "Breakout": dot(sig["breakout"]), "Final Callout": callout_label,
+                        "MTF": "YES", "FNO": "YES", "ATR": atr_val, "_score": sig["score"],
+                    })
+
+            df_display = pd.DataFrame(compiled_rows).sort_values("_score", ascending=False).reset_index(drop=True)
+            scores_by_symbol = dict(zip(df_display["Ticker"], df_display["_score"]))
+            df_display_visible = df_display.drop(columns=["_score"])
+
+            selected_row_data = st.dataframe(
+                df_display_visible, use_container_width=True, hide_index=True, height=520,
+                on_select="rerun", selection_mode="single-row",
+            )
 
     with right_panel:
         with st.container(border=True):
-            st.markdown("<div class='matrix-title'>❖ Sector Performance Today</div>", unsafe_allow_html=True)
-            st.dataframe(sector_perf_styled, use_container_width=True, hide_index=True, height=180)
-            st.caption("Equal-weighted average across this dashboard's F&O stocks per sector - not NSE's official index value.")
+            st.markdown("<div class='matrix-title'>🎯 Active Selection</div>", unsafe_allow_html=True)
 
-        with st.container(border=True):
-            st.markdown("<div class='matrix-title'>🎛️ Active Token Target Scope Selector</div>", unsafe_allow_html=True)
-            stock_options = filtered_watchlist["Symbol"].tolist()
-
-            # --- Sync fix: the scanner table's row-selection is the source of truth. Clicking a
-            # row here now FORCES the dropdown below to match it, instead of the dropdown holding
-            # onto whatever it was last set to (which is what caused the "random" MTF/FNO panels).
-            symbol_key = f"selected_symbol_{selected_sector}"
-            if symbol_key not in st.session_state or st.session_state[symbol_key] not in stock_options:
-                st.session_state[symbol_key] = stock_options[0] if stock_options else None
+            all_symbols_ranked = df_display["Ticker"].tolist()
+            symbol_key = "selected_symbol"
+            if symbol_key not in st.session_state or st.session_state[symbol_key] not in all_symbols_ranked:
+                # Default to the top-ranked (highest confidence) stock if nothing picked yet
+                st.session_state[symbol_key] = all_symbols_ranked[0] if all_symbols_ranked else None
 
             if selected_row_data.selection and len(selected_row_data.selection.rows) > 0:
                 row_idx = int(next(iter(selected_row_data.selection.rows)))
-                if row_idx < len(filtered_watchlist):
-                    st.session_state[symbol_key] = filtered_watchlist.iloc[row_idx]["Symbol"]
+                if row_idx < len(df_display):
+                    st.session_state[symbol_key] = df_display.iloc[row_idx]["Ticker"]
 
-            selected_symbol = st.selectbox("Choose Target Asset:", stock_options, key=symbol_key, label_visibility="collapsed")
+            selected_symbol = st.session_state[symbol_key]
+            st.markdown(f"<div class='active-selection-box'>{selected_symbol}</div>", unsafe_allow_html=True)
+            st.caption("Click any row in the scanner to change this.")
 
-    # Pull target stock record cleanly out of the tracking library arrays matching current index selection states
-    target_stock_df = filtered_watchlist[filtered_watchlist["Symbol"] == selected_symbol].reset_index(drop=True)
+        with st.container(border=True):
+            gauge_score = scores_by_symbol.get(selected_symbol, 50)
+            callout_text, _ = score_to_label(gauge_score)
+            st.markdown(f"<div class='matrix-title'>❖ Signal Confidence: {selected_symbol}</div>", unsafe_allow_html=True)
+            fig = draw_confidence_gauge(gauge_score, callout_text)
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+            st.caption("Composite of Trend / Momentum / Volume / Breakout / Supertrend. Not investment advice.")
+
+    # Pull target stock record for the MTF/FNO panels below
+    target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
+    if target_stock_df.empty:
+        return
     target_stock_row = target_stock_df.iloc[0].to_dict()
 
     current_ltp = float(target_stock_row["Price"])
     calculated_atr = current_ltp * 0.02
-
-    # Query option chain contracts live from Dhan API server network
     strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
-
-    # ==============================================================================
-    # ROW 1.5: CONFIDENCE GAUGE FOR THE CURRENTLY SELECTED STOCK
-    # ==============================================================================
-    gauge_score = scores_by_symbol.get(selected_symbol, 50)
-    callout_text, callout_color = score_to_label(gauge_score)
-
-    gauge_col, _spacer = st.columns([1, 2])
-    with gauge_col:
-        with st.container(border=True):
-            st.markdown(f"<div class='matrix-title'>❖ Signal Confidence: {selected_symbol}</div>", unsafe_allow_html=True)
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=gauge_score,
-                number={"suffix": "%", "font": {"size": 28}},
-                gauge={
-                    "axis": {"range": [0, 100], "tickvals": [0, 25, 50, 75, 100]},
-                    "bar": {"color": callout_color},
-                    "steps": [
-                        {"range": [0, 25], "color": "#e53935"},
-                        {"range": [25, 50], "color": "#ff9800"},
-                        {"range": [50, 75], "color": "#8bc34a"},
-                        {"range": [75, 100], "color": "#1a9c4b"},
-                    ],
-                },
-                title={"text": callout_text, "font": {"size": 16}},
-            ))
-            fig.update_layout(height=220, margin=dict(l=20, r=20, t=40, b=10),
-                               paper_bgcolor="rgba(0,0,0,0)", font={"color": "white"})
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(
-                "Composite of Trend / Momentum / Volume / Breakout / Supertrend signals above. "
-                "Not investment advice - a mechanical count of how many of these five checks currently pass."
-            )
 
     # ==============================================================================
     # ROW 2: DUAL SEPARATE MATRICES FOR MTF AND FNO SPREAD LAYOUTS
