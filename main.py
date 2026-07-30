@@ -26,31 +26,36 @@ with st.sidebar:
     )
     st.button("🔄 Refresh Now", use_container_width=True)
 
+    st.markdown("### 📐 Layout Controls")
+    scanner_width_pct = st.slider(
+        "Scanner panel width", min_value=50, max_value=85, value=77, step=1,
+        help="Shrink this to give the Active Selection / Gauge / MTF / F&O column more room.",
+    )
+    table_font_px = st.slider(
+        "Table font size (px)", min_value=8, max_value=16, value=11, step=1,
+        help="Applies to every data table across the dashboard.",
+    )
+    scanner_height_px = st.slider(
+        "Scanner panel height (px)", min_value=400, max_value=1200, value=740, step=20,
+        help="How tall the FNO Universe Scanner list is before it scrolls internally.",
+    )
+
 if auto_refresh_enabled:
     st.caption(f"⏳ UNIVERSAL EXCHANGE ENGINE OPERATIONAL: Streaming all active NSE F&O counters every {AUTO_REFRESH_SECONDS} seconds...")
 else:
     st.caption("⏸️ Auto-refresh is OFF. Use 'Refresh Now' in the sidebar to pull live data on demand.")
 
-st.markdown("""
+st.markdown(f"""
 <style>
-    .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
-    div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
-    .stDataFrame div { font-size: 11px !important; }
-    .matrix-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }
-    .active-selection-box {
+    .block-container {{ padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }}
+    div[data-testid="stVerticalBlock"] > div {{ padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }}
+    .stDataFrame div {{ font-size: {table_font_px}px !important; }}
+    .matrix-title {{ font-family: monospace; font-size: 13px; font-weight: bold; color: #FF9900; margin-bottom: 3px; }}
+    .active-selection-box {{
         font-family: monospace; font-size: 22px; font-weight: bold; color: #FFFFFF;
         background-color: #1a1c23; border: 1px solid #333; border-radius: 6px;
         padding: 10px 14px; text-align: center;
-    }
-    /* Floating adjustable block sizing: drag the bottom-right corner of any bordered panel
-       to resize it manually. This is a native browser resize handle, not a drag-reposition
-       grid - each panel can be made bigger/smaller in place. */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        resize: both;
-        overflow: auto;
-        min-width: 260px;
-        min-height: 120px;
-    }
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -209,7 +214,7 @@ def live_dashboard(master_database):
     # column on the right (Active Selection / Gauge / MTF / F&O) - matches the
     # "Required UI View" mockup.
     # ==============================================================================
-    left_panel, right_panel = st.columns([3.4, 1])
+    left_panel, right_panel = st.columns([scanner_width_pct, 100 - scanner_width_pct])
 
     with left_panel:
         with st.container(border=True):
@@ -240,7 +245,7 @@ def live_dashboard(master_database):
             df_display_visible = df_display.drop(columns=["_score"])
 
             selected_row_data = st.dataframe(
-                df_display_visible, use_container_width=True, hide_index=True, height=740,
+                df_display_visible, use_container_width=True, hide_index=True, height=scanner_height_px,
                 on_select="rerun", selection_mode="single-row", key="fno_scanner_df",
             )
 
@@ -296,12 +301,17 @@ def live_dashboard(master_database):
 
         with st.container(border=True):
             st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-            mtf_matrix_row = [{
-                "Asset": target_stock_row["Symbol"], "Spot Entry": f"₹ {current_ltp}",
-                "Spot SL (Stop Down)": f"₹ {strike_details['spot_sl']}", "Spot TP (Target Up)": f"₹ {strike_details['spot_tp']}",
-                "MTF Max Funding": "Up to 4x Leverage", "Order Units": "10 Shares"
-            }]
-            st.dataframe(pd.DataFrame(mtf_matrix_row), use_container_width=True, hide_index=True)
+            # Vertical Metric/Value layout instead of one wide row - fits a narrow column with
+            # no horizontal scrolling, regardless of how narrow the panel is.
+            mtf_rows = [
+                {"Metric": "Asset", "Value": target_stock_row["Symbol"]},
+                {"Metric": "Spot Entry", "Value": f"₹ {current_ltp}"},
+                {"Metric": "Stop Loss (SL)", "Value": f"₹ {strike_details['spot_sl']}"},
+                {"Metric": "Target (TP)", "Value": f"₹ {strike_details['spot_tp']}"},
+                {"Metric": "Max Funding", "Value": "Up to 4x Leverage"},
+                {"Metric": "Order Units", "Value": "10 Shares"},
+            ]
+            st.dataframe(pd.DataFrame(mtf_rows), use_container_width=True, hide_index=True)
             if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
                 payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
                 response = engine.fetcher.place_live_order(payload)
@@ -310,12 +320,14 @@ def live_dashboard(master_database):
         with st.container(border=True):
             st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
             official_lot_multiplier = int(target_stock_row["LotSize"])
-            fno_matrix_row = [{
-                "Option Strike": f"{strike_details['strike']} {strike_details['type']}", "Entry Premium": f"₹ {strike_details['current_premium']}",
-                "Premium SL": f"₹ {strike_details['premium_sl']}", "Contract Multiplier": f"{official_lot_multiplier} Shares (1 Lot)",
-                "Premium TP": f"₹ {strike_details['premium_tp']}"
-            }]
-            st.dataframe(pd.DataFrame(fno_matrix_row), use_container_width=True, hide_index=True)
+            fno_rows = [
+                {"Metric": "Option Strike", "Value": f"{strike_details['strike']} {strike_details['type']}"},
+                {"Metric": "Entry Premium", "Value": f"₹ {strike_details['current_premium']}"},
+                {"Metric": "Premium SL", "Value": f"₹ {strike_details['premium_sl']}"},
+                {"Metric": "Contract Multiplier", "Value": f"{official_lot_multiplier} Shares (1 Lot)"},
+                {"Metric": "Premium TP", "Value": f"₹ {strike_details['premium_tp']}"},
+            ]
+            st.dataframe(pd.DataFrame(fno_rows), use_container_width=True, hide_index=True)
             if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
                 payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "FNO", quantity=official_lot_multiplier)
                 response = engine.fetcher.place_live_order(payload)
