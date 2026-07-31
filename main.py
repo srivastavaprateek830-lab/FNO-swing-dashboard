@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import mplfinance as mpf
 from signal_engine import TradingEngine
 import nifty_sectors
 
@@ -55,11 +56,6 @@ st.markdown("""
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
     div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .matrix-title { font-family: monospace; font-size: 12px; font-weight: bold; color: #FF9900; margin-bottom: 2px; }
-    .active-selection-box {
-        font-family: monospace; font-size: 16px; font-weight: bold; color: #FFFFFF;
-        background-color: #1a1c23; border: 1px solid #333; border-radius: 6px;
-        padding: 6px 10px; text-align: center;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -124,6 +120,47 @@ def draw_confidence_gauge(score: int, label: str):
     ax.text(0, -0.05, label, ha="center", va="top", fontsize=10, fontweight="bold", color="white")
     ax.text(0, 0.45, f"{score}%", ha="center", va="center", fontsize=15, fontweight="bold", color="white")
     fig.tight_layout(pad=0.3)
+    return fig
+
+
+CHART_TIMEFRAMES = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252, "All": None}
+
+
+def draw_daily_chart(hist: dict, symbol: str, timeframe: str):
+    """Daily candlestick chart with 20/50-day moving averages and volume, built from Dhan's
+    historical daily candles (already cached 6h per symbol - no extra API call per timeframe
+    switch, this just slices the same cached data to a shorter/longer window).
+
+    NOTE: this is a v1 - it's DAILY granularity with a lookback-window selector (1M/3M/6M/1Y/All),
+    not true intraday (1-min/5-min) live charting with drawing tools the way Dhan's own charts
+    work. That would need Dhan's separate intraday-candle endpoint wired up as a further step."""
+    if not hist or not hist.get("close") or len(hist["close"]) < 5:
+        return None
+
+    df = pd.DataFrame({
+        "Open": hist["open"], "High": hist["high"], "Low": hist["low"],
+        "Close": hist["close"], "Volume": hist.get("volume", [0] * len(hist["close"])),
+    })
+    if "timestamp" in hist and len(hist["timestamp"]) == len(df):
+        df.index = pd.to_datetime(hist["timestamp"], unit="s")
+    else:
+        df.index = pd.date_range(end=pd.Timestamp.today(), periods=len(df), freq="B")
+
+    n_rows = CHART_TIMEFRAMES.get(timeframe)
+    if n_rows:
+        df = df.tail(n_rows)
+
+    mc = mpf.make_marketcolors(up="#1a9c4b", down="#e53935", edge="inherit", wick="inherit", volume="inherit")
+    style = mpf.make_mpf_style(
+        base_mpf_style="nightclouds", marketcolors=mc, facecolor="#0e1117", edgecolor="#0e1117",
+        figcolor="#0e1117", gridcolor="#222831",
+        rc={"axes.labelcolor": "white", "xtick.color": "white", "ytick.color": "white", "text.color": "white"},
+    )
+    mav = (20, 50) if len(df) >= 50 else ((20,) if len(df) >= 20 else ())
+    fig, _ = mpf.plot(
+        df, type="candle", mav=mav, volume=True, style=style, returnfig=True,
+        figsize=(11, 4.2), tight_layout=True, title=f"\n{symbol} - Daily ({timeframe})",
+    )
     return fig
 
 
@@ -232,8 +269,10 @@ def live_dashboard(master_database):
             with st.spinner("Computing live signals across the full F&O universe (first load only)..."):
                 for _, stock in master_database.iterrows():
                     close_val = float(stock["Price"])
-                    atr_val = round(close_val * 0.02, 2)
                     sig = engine.fetcher.compute_indicator_signals(str(stock["ID"]), close_val)
+                    # Real ATR from actual historical daily true range - falls back to the old
+                    # 2%-of-price estimate ONLY if there isn't enough history yet for this symbol.
+                    atr_val = sig["atr"] if sig.get("atr") else round(close_val * 0.02, 2)
                     callout_label, _ = score_to_label(sig["score"])
 
                     compiled_rows.append({
@@ -242,12 +281,13 @@ def live_dashboard(master_database):
                         "Supertrend": dot(sig["supertrend"]), "Trend": dot(sig["trend"]),
                         "Momentum": dot(sig["momentum"]), "Volume": dot(sig["volume"]),
                         "Breakout": dot(sig["breakout"]), "Signal": callout_label,
-                        "MTF": "YES", "FNO": "YES", "ATR": atr_val, "_score": sig["score"],
+                        "MTF": "YES", "FNO": "YES", "ATR": atr_val, "_score": sig["score"], "_atr": atr_val,
                     })
 
             df_display = pd.DataFrame(compiled_rows).sort_values("_score", ascending=False).reset_index(drop=True)
             scores_by_symbol = dict(zip(df_display["Ticker"], df_display["_score"]))
-            df_display_visible = df_display.drop(columns=["_score"])
+            atr_by_symbol = dict(zip(df_display["Ticker"], df_display["_atr"]))
+            df_display_visible = df_display.drop(columns=["_score", "_atr"])
 
             # Real, supported way to reduce wasted per-column space: explicit width config
             # (unlike font-size, Streamlit's dataframe DOES respect this).
@@ -268,73 +308,97 @@ def live_dashboard(master_database):
                 column_config=col_config,
             )
 
+    # --- Selection resolution (not tied to a specific column - needed by both the chart
+    # below and the right-hand panels) ---
+    all_symbols_ranked = df_display["Ticker"].tolist()
+    symbol_key = "selected_symbol"
+    last_idx_key = "selected_symbol_last_row_idx"
+
+    if symbol_key not in st.session_state or st.session_state[symbol_key] not in all_symbols_ranked:
+        # Default to the top-ranked (highest confidence) stock if nothing picked yet, or if
+        # the previously-selected symbol dropped out of the universe entirely.
+        st.session_state[symbol_key] = all_symbols_ranked[0] if all_symbols_ranked else None
+
+    # --- Selection sync fix ---
+    # The scanner re-sorts by confidence every refresh cycle, so a stock's row INDEX shifts
+    # over time even without a new click. Streamlit's dataframe selection persists by index,
+    # not by symbol - so re-resolving the symbol from that index on every single cycle (as
+    # before) meant a routine re-sort would silently swap in whatever symbol now sits at that
+    # old index. Fix: only re-resolve when the reported index has actually CHANGED since we
+    # last processed it (i.e. a genuinely new click) - otherwise leave the current pick alone.
+    current_rows = selected_row_data.selection.rows if selected_row_data.selection else []
+    if current_rows:
+        row_idx = int(current_rows[0])
+        if row_idx != st.session_state.get(last_idx_key) and row_idx < len(df_display):
+            st.session_state[symbol_key] = df_display.iloc[row_idx]["Ticker"]
+        st.session_state[last_idx_key] = row_idx
+
+    selected_symbol = st.session_state[symbol_key]
+    target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
+    if target_stock_df.empty:
+        return
+    target_stock_row = target_stock_df.iloc[0].to_dict()
+    current_ltp = float(target_stock_row["Price"])
+    real_atr = atr_by_symbol.get(selected_symbol) or round(current_ltp * 0.02, 2)
+    strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, real_atr)
+
+    # ==============================================================================
+    # DAILY CHART (left column, below the scanner) - own fixed-height container so it
+    # doesn't force the whole page taller; timeframe switch just re-slices already-cached data.
+    # ==============================================================================
+    with left_panel:
+        with st.container(border=True):
+            chart_title_col, chart_tf_col = st.columns([3, 1])
+            with chart_title_col:
+                st.markdown(f"<div class='matrix-title'>📈 {selected_symbol} - Daily Chart</div>", unsafe_allow_html=True)
+            with chart_tf_col:
+                timeframe = st.selectbox("Timeframe", list(CHART_TIMEFRAMES.keys()), index=2,
+                                          label_visibility="collapsed", key="chart_timeframe")
+            hist = engine.fetcher.fetch_historical_daily(str(target_stock_row["ID"]))
+            chart_fig = draw_daily_chart(hist, selected_symbol, timeframe)
+            if chart_fig is not None:
+                st.pyplot(chart_fig, use_container_width=True)
+                plt.close(chart_fig)
+            else:
+                st.info("Not enough historical data to draw a chart for this stock yet.")
+            st.caption(
+                "Daily candles with 20/50-day moving averages - v1. True intraday (1-min/5-min) "
+                "live charting with drawing tools is a bigger follow-up if you want full parity with Dhan's own charts."
+            )
+
     with right_panel:
-        all_symbols_ranked = df_display["Ticker"].tolist()
-        symbol_key = "selected_symbol"
-        last_idx_key = "selected_symbol_last_row_idx"
-
-        if symbol_key not in st.session_state or st.session_state[symbol_key] not in all_symbols_ranked:
-            # Default to the top-ranked (highest confidence) stock if nothing picked yet, or if
-            # the previously-selected symbol dropped out of the universe entirely.
-            st.session_state[symbol_key] = all_symbols_ranked[0] if all_symbols_ranked else None
-
-        # --- Selection sync fix ---
-        # The scanner re-sorts by confidence every refresh cycle, so a stock's row INDEX shifts
-        # over time even without a new click. Streamlit's dataframe selection persists by index,
-        # not by symbol - so re-resolving the symbol from that index on every single cycle (as
-        # before) meant a routine re-sort would silently swap in whatever symbol now sits at that
-        # old index. Fix: only re-resolve when the reported index has actually CHANGED since we
-        # last processed it (i.e. a genuinely new click) - otherwise leave the current pick alone.
-        current_rows = selected_row_data.selection.rows if selected_row_data.selection else []
-        if current_rows:
-            row_idx = int(current_rows[0])
-            if row_idx != st.session_state.get(last_idx_key) and row_idx < len(df_display):
-                st.session_state[symbol_key] = df_display.iloc[row_idx]["Ticker"]
-            st.session_state[last_idx_key] = row_idx
-
-        selected_symbol = st.session_state[symbol_key]
-
         with st.container(border=True):
             st.markdown("<div class='matrix-title'>🎯 Active Selection</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='active-selection-box'>{selected_symbol}</div>", unsafe_allow_html=True)
-            st.caption("Click any row in the scanner to change this.")
+            quote_col, gauge_col = st.columns([1, 1])
+            with quote_col:
+                quote_rows = [{
+                    "Symbol": selected_symbol, "LTP": f"₹ {current_ltp}",
+                    "Chg %": next((r["% Chg"] for _, r in df_display.iterrows() if r["Ticker"] == selected_symbol), "N/A"),
+                }]
+                st.dataframe(pd.DataFrame(quote_rows), use_container_width=True, hide_index=True, height=80)
+                st.caption("Click any row in the scanner to change this.")
+            with gauge_col:
+                gauge_score = scores_by_symbol.get(selected_symbol, 50)
+                callout_text, _ = score_to_label(gauge_score)
+                fig = draw_confidence_gauge(gauge_score, callout_text)
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
 
         with st.container(border=True):
-            gauge_score = scores_by_symbol.get(selected_symbol, 50)
-            callout_text, _ = score_to_label(gauge_score)
-            st.markdown(f"<div class='matrix-title'>❖ Signal Confidence: {selected_symbol}</div>", unsafe_allow_html=True)
-            fig = draw_confidence_gauge(gauge_score, callout_text)
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
-            st.caption("Composite of Trend / Momentum / Volume / Breakout / Supertrend. Not investment advice.")
-
-        # Pull target stock record for the MTF/FNO panels below
-        target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
-        if target_stock_df.empty:
-            return
-        target_stock_row = target_stock_df.iloc[0].to_dict()
-
-        current_ltp = float(target_stock_row["Price"])
-        calculated_atr = current_ltp * 0.02
-        strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, calculated_atr)
-
-        with st.container(border=True):
-            st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-            # Vertical Metric/Value layout instead of one wide row - fits a narrow column with
-            # no horizontal scrolling, regardless of how narrow the panel is.
-            mtf_rows = [
-                {"Metric": "Asset", "Value": target_stock_row["Symbol"]},
-                {"Metric": "Spot Entry", "Value": f"₹ {current_ltp}"},
-                {"Metric": "Stop Loss (SL)", "Value": f"₹ {strike_details['spot_sl']}"},
-                {"Metric": "Target (TP)", "Value": f"₹ {strike_details['spot_tp']}"},
-                {"Metric": "Max Funding", "Value": "Up to 4x Leverage"},
-                {"Metric": "Order Units", "Value": "10 Shares"},
-            ]
-            st.dataframe(pd.DataFrame(mtf_rows), use_container_width=True, hide_index=True)
-            if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
-                payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
-                response = engine.fetcher.place_live_order(payload)
-                st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+            st.markdown("<div class='matrix-title'>❖ Call vs Put OI Bias</div>", unsafe_allow_html=True)
+            oi_bias = engine.fetcher.get_call_put_oi_bias(str(target_stock_row["ID"]))
+            if oi_bias["call_pct"] is not None:
+                call_pct, put_pct = oi_bias["call_pct"], oi_bias["put_pct"]
+                st.markdown(
+                    f"""<div style='display:flex; width:100%; height:26px; border-radius:4px; overflow:hidden; font-family:monospace; font-size:12px; font-weight:bold;'>
+                        <div style='width:{call_pct}%; background:#1a9c4b; display:flex; align-items:center; justify-content:center; color:white;'>{call_pct}%</div>
+                        <div style='width:{put_pct}%; background:#e53935; display:flex; align-items:center; justify-content:center; color:white;'>{put_pct}%</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+                st.caption("Real Call vs Put Open Interest split from the option chain - not literal bid/ask order-book depth (that needs Dhan's separate websocket depth feed).")
+            else:
+                st.caption("Option chain OI data unavailable right now for this stock.")
 
         with st.container(border=True):
             st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
@@ -346,12 +410,28 @@ def live_dashboard(master_database):
                 {"Metric": "Contract Multiplier", "Value": f"{official_lot_multiplier} Shares (1 Lot)"},
                 {"Metric": "Premium TP", "Value": f"₹ {strike_details['premium_tp']}"},
             ]
-            st.dataframe(pd.DataFrame(fno_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(fno_rows), use_container_width=True, hide_index=True, height=215)
             if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
                 payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "FNO", quantity=official_lot_multiplier)
                 response = engine.fetcher.place_live_order(payload)
                 st.balloons()
                 st.success(f"Live Option Order Fired! Units: {official_lot_multiplier}. ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+
+        with st.container(border=True):
+            st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
+            mtf_rows = [
+                {"Metric": "Asset", "Value": target_stock_row["Symbol"]},
+                {"Metric": "Spot Entry", "Value": f"₹ {current_ltp}"},
+                {"Metric": "Stop Loss (SL)", "Value": f"₹ {strike_details['spot_sl']}"},
+                {"Metric": "Target (TP)", "Value": f"₹ {strike_details['spot_tp']}"},
+                {"Metric": "Max Funding", "Value": "Up to 4x Leverage"},
+                {"Metric": "Order Units", "Value": "10 Shares"},
+            ]
+            st.dataframe(pd.DataFrame(mtf_rows), use_container_width=True, hide_index=True, height=250)
+            if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
+                payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
+                response = engine.fetcher.place_live_order(payload)
+                st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
 
 
 live_dashboard(static_universe)
