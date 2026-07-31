@@ -92,10 +92,11 @@ class DhanDataFetcher:
         return result
 
     def fetch_historical_daily(self, security_id: str, exchange_segment: str = "NSE_EQ",
-                                instrument: str = "EQUITY", lookback_days: int = 90):
-        """Fetches daily OHLCV candles for indicator math. Cached for 6 hours per symbol since
-        the daily candle only changes once the market closes - we don't need to re-fetch this
-        every 30-second refresh, only recompute against the latest live price."""
+                                instrument: str = "EQUITY", lookback_days: int = 400):
+        """Fetches daily OHLCV candles for indicator math AND the daily chart widget. Cached for
+        6 hours per symbol since the daily candle only changes once the market closes. Default
+        lookback covers a full year (for the chart's '1Y' view) plus buffer for indicator math -
+        fetched once, reused for both, so switching chart timeframes doesn't trigger new API calls."""
         cached = self._hist_cache.get(security_id)
         if cached and (time.time() - cached[1] < 6 * 3600):
             return cached[0]
@@ -125,6 +126,22 @@ class DhanDataFetcher:
         except Exception as e:
             self.last_error = f"Historical data exception: {e}"
             return None
+
+    @staticmethod
+    def _compute_atr(highs, lows, closes, period=14) -> float:
+        """Real Wilder's ATR from actual daily true-range history. Returns the latest value.
+        This replaces the old placeholder of 'current_price * 0.02', which gave every stock
+        the exact same 2% band regardless of how volatile it actually is."""
+        n = len(closes)
+        if n < period + 2:
+            return 0.0
+        trs = [0.0] * n
+        for i in range(1, n):
+            trs[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        atr = sum(trs[1:period + 1]) / period
+        for i in range(period + 1, n):
+            atr = (atr * (period - 1) + trs[i]) / period
+        return atr
 
     @staticmethod
     def _supertrend_is_bullish(highs, lows, closes, period=10, multiplier=3.0) -> bool:
@@ -167,7 +184,7 @@ class DhanDataFetcher:
         it needs NSE's separate bhavcopy/delivery-position files, so it stays labeled N/A rather
         than being faked as a pass/fail."""
         default = {"rsi": None, "trend": "N/A", "momentum": "N/A", "volume": "N/A",
-                   "breakout": "N/A", "supertrend": "N/A", "score": 50}
+                   "breakout": "N/A", "supertrend": "N/A", "score": 50, "atr": None}
 
         hist = self.fetch_historical_daily(security_id)
         if not hist or not hist.get("close"):
@@ -180,6 +197,10 @@ class DhanDataFetcher:
 
         if len(closes) < 16:
             return default
+
+        # --- Real ATR (14-period, Wilder smoothing) - used for scanner display AND for the
+        # MTF/F&O stop-loss & target math below, instead of a flat 2%-of-price guess. ---
+        atr_val = self._compute_atr(highs, lows, closes)
 
         # --- RSI (Wilder's 14-period) ---
         deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
@@ -226,6 +247,7 @@ class DhanDataFetcher:
             "breakout": "YES" if breakout_pass else "NO",
             "supertrend": "PASS" if supertrend_pass else "FAIL",
             "score": score,
+            "atr": round(atr_val, 2),
         }
 
     def _get_nearest_expiry(self, security_id: str, underlying_seg: str):
@@ -302,6 +324,22 @@ class DhanDataFetcher:
             self.last_error = f"Order placement exception: {e}"
             return {"status": "failure", "remarks": str(e)}
 
+    def get_call_put_oi_bias(self, underlying_symbol_id: str) -> dict:
+        """Real Call vs Put Open Interest split from the option chain we already fetch.
+        NOTE: this is OI-based sentiment, not literal bid/ask order-book depth - true Level-2
+        market depth on Dhan requires a separate websocket feed (20-level depth), not a simple
+        REST call, so this is intentionally labeled as OI bias rather than 'market depth'."""
+        raw_chain = self.fetch_option_chain(underlying_symbol_id)
+        if not raw_chain:
+            return {"call_pct": None, "put_pct": None}
+        call_oi = sum(r["oi"] for r in raw_chain if r["type"] == "CE")
+        put_oi = sum(r["oi"] for r in raw_chain if r["type"] == "PE")
+        total = call_oi + put_oi
+        if total <= 0:
+            return {"call_pct": None, "put_pct": None}
+        call_pct = round(100 * call_oi / total, 1)
+        return {"call_pct": call_pct, "put_pct": round(100 - call_pct, 1)}
+
 
 class TradingEngine:
     """PRODUCTION LOGIC ENGINE: Computes target metrics directly from live data strings."""
@@ -312,28 +350,47 @@ class TradingEngine:
     def optimize_strike_with_targets(self, underlying_symbol_id: str, current_price: float, atr: float) -> dict:
         raw_chain = self.fetcher.fetch_option_chain(underlying_symbol_id)
 
+        spot_sl = round(current_price - (1.5 * atr), 2)
+        spot_tp = round(current_price + (3.0 * atr), 2)
+
+        # Premium SL/TP used to be a flat x0.5 / x2.0 of the premium for EVERY stock, regardless
+        # of the underlying's actual volatility - which is exactly why it always looked like a
+        # suspicious flat "double the premium" pattern. Real option Greeks (delta) aren't available
+        # without a live per-strike Greeks feed, so this uses a standard rough approximation instead:
+        # a near-the-money option's premium moves at roughly half the underlying's price move
+        # (delta ~ 0.5). That ties the premium target to THIS stock's real ATR-based spot move,
+        # so it varies stock-to-stock instead of being a fixed multiplier.
+        ASSUMED_ATM_DELTA = 0.5
+
+        def _premium_targets(premium: float) -> tuple:
+            tp = round(premium + ASSUMED_ATM_DELTA * (spot_tp - current_price), 2)
+            sl = round(max(premium - ASSUMED_ATM_DELTA * (current_price - spot_sl), 0.05), 2)
+            return sl, tp
+
         if not raw_chain:
             # Option chain unavailable (market closed, rate-limited, or no F&O contract) - use a
             # clearly-labeled estimate so it's never mistaken for a live quote.
             mock_strike = round(current_price / 100) * 100
             mock_premium = round(current_price * 0.015, 2)
+            premium_sl, premium_tp = _premium_targets(mock_premium)
             return {
                 "strike": mock_strike, "expiry": "N/A (est.)", "current_premium": mock_premium, "type": "CE",
-                "spot_sl": round(current_price - (1.5 * atr), 2), "spot_tp": round(current_price + (3.0 * atr), 2),
-                "premium_sl": round(mock_premium * 0.50, 2), "premium_tp": round(mock_premium * 2.0, 2),
+                "spot_sl": spot_sl, "spot_tp": spot_tp,
+                "premium_sl": premium_sl, "premium_tp": premium_tp,
             }
 
         # Pick the Call strike nearest to the current spot price (closest to at-the-money)
         ce_rows = [r for r in raw_chain if r["type"] == "CE"] or raw_chain
         optimal_row = min(ce_rows, key=lambda r: abs(r["strikePrice"] - current_price))
         current_premium = float(optimal_row.get("lastPrice") or (current_price * 0.015))
+        premium_sl, premium_tp = _premium_targets(current_premium)
 
         return {
             "strike": optimal_row["strikePrice"],
             "expiry": optimal_row.get("expiryDate", "N/A"),
             "current_premium": current_premium, "type": "CE",
-            "spot_sl": round(current_price - (1.5 * atr), 2), "spot_tp": round(current_price + (3.0 * atr), 2),
-            "premium_sl": round(current_premium * 0.50, 2), "premium_tp": round(current_premium * 2.0, 2),
+            "spot_sl": spot_sl, "spot_tp": spot_tp,
+            "premium_sl": premium_sl, "premium_tp": premium_tp,
         }
 
     def generate_dhan_order_payload(self, security_id: str, symbol: str, transaction_type: str,
