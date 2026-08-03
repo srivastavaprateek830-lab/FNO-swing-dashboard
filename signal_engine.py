@@ -176,9 +176,60 @@ class DhanDataFetcher:
 
         return trend_up
 
+    @staticmethod
+    def _score_at_index(closes, highs, lows, volumes, i):
+        """Computes Trend/Momentum/Volume/Breakout/Supertrend/RSI using ONLY data up to and
+        including index i - no lookahead. This is the single source of truth for signal logic,
+        used both for today's live score AND for walk-forward backtesting, so the backtest is
+        actually testing the exact same rules the dashboard uses, not an approximation of them."""
+        if i < 20:
+            return None
+        window_closes = closes[:i + 1]
+        window_highs = highs[:i + 1]
+        window_lows = lows[:i + 1]
+        window_vol = volumes[:i + 1] if volumes else []
+
+        deltas = [window_closes[j] - window_closes[j - 1] for j in range(1, len(window_closes))]
+        period = 14
+        if len(deltas) < period:
+            return None
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        rsi = 100.0 if avg_loss == 0 else 100 - (100 / (1 + (avg_gain / avg_loss)))
+
+        sma20 = sum(window_closes[-20:]) / 20
+        trend_pass = window_closes[-1] > sma20
+
+        roc = ((window_closes[-1] - window_closes[-6]) / window_closes[-6]) * 100 if len(window_closes) > 6 else 0.0
+        momentum_pass = roc > 0
+
+        if window_vol and len(window_vol) >= 5:
+            avg_vol = sum(window_vol[-20:]) / min(20, len(window_vol))
+            volume_pass = window_vol[-1] > avg_vol
+        else:
+            volume_pass = None
+
+        prior_window = window_highs[-21:-1] if len(window_highs) > 21 else window_highs[:-1]
+        prior_high = max(prior_window) if prior_window else window_closes[-1]
+        breakout_pass = window_closes[-1] > prior_high
+
+        supertrend_pass = DhanDataFetcher._supertrend_is_bullish(window_highs, window_lows, window_closes)
+
+        signals = [trend_pass, momentum_pass, breakout_pass, supertrend_pass]
+        if volume_pass is not None:
+            signals.append(volume_pass)
+        score = round(100 * sum(1 for s in signals if s) / len(signals))
+
+        return {
+            "rsi": round(rsi, 1), "trend": trend_pass, "momentum": momentum_pass,
+            "volume": volume_pass, "breakout": breakout_pass, "supertrend": supertrend_pass, "score": score,
+        }
+
     def compute_indicator_signals(self, security_id: str, live_price: float) -> dict:
-        """Computes RSI / Trend / Momentum / Volume / Breakout / Supertrend from cached daily
-        candles plus today's live price - these are now REAL calculations, not placeholders.
+        """Today's live signal read: fetches cached historical candles, appends the live price
+        as 'today', and scores it using the exact same logic the backtest validates.
 
         NOTE: 'Del Strength' (NSE delivery %) is NOT available from Dhan's market data APIs -
         it needs NSE's separate bhavcopy/delivery-position files, so it stays labeled N/A rather
@@ -198,57 +249,41 @@ class DhanDataFetcher:
         if len(closes) < 16:
             return default
 
-        # --- Real ATR (14-period, Wilder smoothing) - used for scanner display AND for the
-        # MTF/F&O stop-loss & target math below, instead of a flat 2%-of-price guess. ---
         atr_val = self._compute_atr(highs, lows, closes)
-
-        # --- RSI (Wilder's 14-period) ---
-        deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-        gains = [d if d > 0 else 0 for d in deltas]
-        losses = [-d if d < 0 else 0 for d in deltas]
-        period = 14
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        rsi = 100.0 if avg_loss == 0 else 100 - (100 / (1 + (avg_gain / avg_loss)))
-
-        # --- Trend: live price vs 20-period SMA ---
-        sma20 = sum(closes[-20:]) / min(20, len(closes))
-        trend_pass = live_price > sma20
-
-        # --- Momentum: 5-day rate of change ---
-        roc = ((closes[-1] - closes[-6]) / closes[-6]) * 100 if len(closes) > 6 else 0.0
-        momentum_pass = roc > 0
-
-        # --- Volume: most recent traded day's volume vs its own 20-day average ---
-        if volumes and len(volumes) >= 5:
-            avg_vol = sum(volumes[-20:]) / min(20, len(volumes))
-            volume_pass = volumes[-1] > avg_vol
-        else:
-            volume_pass = None
-
-        # --- Breakout: live price vs prior 20-day high (excluding today) ---
-        prior_window = highs[-21:-1] if len(highs) > 21 else highs[:-1]
-        prior_high = max(prior_window) if prior_window else live_price
-        breakout_pass = live_price > prior_high
-
-        # --- Supertrend (ATR 10, multiplier 3) ---
-        supertrend_pass = self._supertrend_is_bullish(highs, lows, closes)
-
-        signals = [trend_pass, momentum_pass, breakout_pass, supertrend_pass]
-        if volume_pass is not None:
-            signals.append(volume_pass)
-        score = round(100 * sum(1 for s in signals if s) / len(signals))
+        sig = self._score_at_index(closes, highs, lows, volumes, len(closes) - 1)
+        if sig is None:
+            return default
 
         return {
-            "rsi": round(rsi, 1),
-            "trend": "PASS" if trend_pass else "FAIL",
-            "momentum": "PASS" if momentum_pass else "FAIL",
-            "volume": ("PASS" if volume_pass else "FAIL") if volume_pass is not None else "N/A",
-            "breakout": "YES" if breakout_pass else "NO",
-            "supertrend": "PASS" if supertrend_pass else "FAIL",
-            "score": score,
+            "rsi": sig["rsi"],
+            "trend": "PASS" if sig["trend"] else "FAIL",
+            "momentum": "PASS" if sig["momentum"] else "FAIL",
+            "volume": ("PASS" if sig["volume"] else "FAIL") if sig["volume"] is not None else "N/A",
+            "breakout": "YES" if sig["breakout"] else "NO",
+            "supertrend": "PASS" if sig["supertrend"] else "FAIL",
+            "score": sig["score"],
             "atr": round(atr_val, 2),
         }
+
+    def backtest_signal_scores(self, hist: dict, lookahead_days: int = 5) -> list:
+        """Walk-forward backtest: for every historical day (with enough warmup data), computes
+        what THIS dashboard's score would have been using only data available as of that day,
+        then checks the actual forward return over the next `lookahead_days` trading days.
+        Returns a list of (score, forward_return_pct) tuples - the raw material for computing
+        a real, verifiable hit-rate per score band."""
+        if not hist or not hist.get("close"):
+            return []
+        closes, highs, lows = list(hist["close"]), list(hist["high"]), list(hist["low"])
+        volumes = list(hist.get("volume", []))
+        n = len(closes)
+        results = []
+        for i in range(20, n - lookahead_days):
+            sig = self._score_at_index(closes, highs, lows, volumes, i)
+            if sig is None or closes[i] == 0:
+                continue
+            fwd_return = (closes[i + lookahead_days] - closes[i]) / closes[i] * 100
+            results.append((sig["score"], fwd_return))
+        return results
 
     def _get_nearest_expiry(self, security_id: str, underlying_seg: str):
         """Option chain requires an explicit expiry date, fetched from a separate endpoint.
