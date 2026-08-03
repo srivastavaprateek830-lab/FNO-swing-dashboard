@@ -1,53 +1,42 @@
 import io
-import math
+import datetime as dt
 import streamlit as st
 import pandas as pd
 import requests
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import mplfinance as mpf
 from signal_engine import TradingEngine
 import nifty_sectors
 
-# Force application container to use standard compact width limits
 st.set_page_config(page_title="FNO Universe Scanner", layout="wide")
 
 # How often the live panel refreshes itself, in seconds.
-# Change this single number to slow it down further (e.g. 60 for once a minute).
 AUTO_REFRESH_SECONDS = 30
+BUY_SCORE_THRESHOLD = 60     # score >= this counts as a BUY-side signal
+SELL_SCORE_THRESHOLD = 40    # score <= this counts as a SELL-side signal
+BACKTEST_LOOKAHEAD_DAYS = 5  # "swing" horizon used for the accuracy panel
 
 with st.sidebar:
     st.markdown("### ⚙️ Refresh Controls")
     auto_refresh_enabled = st.checkbox(
-        "Enable auto-refresh",
-        value=True,
+        "Enable auto-refresh", value=True,
         help="Turn off to stop background polling entirely and use 'Refresh Now' instead.",
     )
     st.button("🔄 Refresh Now", use_container_width=True)
 
     st.markdown("### 📐 Layout Controls")
     scanner_width_pct = st.slider(
-        "Scanner panel width", min_value=50, max_value=85, value=77, step=1,
-        help="Shrink this to give the Active Selection / Gauge / MTF / F&O column more room.",
+        "Scanner panel width", min_value=50, max_value=85, value=70, step=1,
+        help="Shrink this to give the Buy/Sell alert boxes more room.",
     )
     compact_columns = st.checkbox(
         "Compact scanner columns", value=True,
         help="Narrows every scanner column to reduce wasted header space.",
     )
     scanner_height_px = st.slider(
-        "Scanner panel height (px)", min_value=400, max_value=1200, value=740, step=20,
-        help="How tall the FNO Universe Scanner list is before it scrolls internally.",
-    )
-    st.caption(
-        "Note: Streamlit's table font size and row height are hardcoded in its frontend "
-        "(rendered on a canvas, not real text) - there's no supported way to shrink those "
-        "directly, so this doesn't offer a font-size slider that wouldn't actually do anything."
+        "Scanner panel height (px)", min_value=400, max_value=1200, value=700, step=20,
     )
 
 if auto_refresh_enabled:
-    st.caption(f"⏳ UNIVERSAL EXCHANGE ENGINE OPERATIONAL: Streaming all active NSE F&O counters every {AUTO_REFRESH_SECONDS} seconds...")
+    st.caption(f"⏳ Streaming all active NSE F&O counters every {AUTO_REFRESH_SECONDS} seconds...")
 else:
     st.caption("⏸️ Auto-refresh is OFF. Use 'Refresh Now' in the sidebar to pull live data on demand.")
 
@@ -56,6 +45,8 @@ st.markdown("""
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
     div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .matrix-title { font-family: monospace; font-size: 12px; font-weight: bold; color: #FF9900; margin-bottom: 2px; }
+    .buy-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #1a9c4b; margin-bottom: 2px; }
+    .sell-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #e53935; margin-bottom: 2px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,25 +56,20 @@ def get_engine():
     return TradingEngine()
 
 
+@st.cache_resource
+def get_signal_history_store():
+    """Persists across all refresh cycles AND all users of this app (until the app is rebooted)
+    - this is what lets us say 'this BUY signal has been active since 10:42 AM' instead of just
+    'BUY' with no sense of when it actually triggered. Resets on reboot since there's no memory
+    of what happened before the app started watching."""
+    return {}
+
+
 engine = get_engine()
-
-
-def score_to_label(score: int):
-    """Maps a 0-100 composite signal score to a 5-tier buy/sell label + gauge color."""
-    if score >= 80:
-        return "🟢 STRONG BUY", "#1a9c4b"
-    elif score >= 60:
-        return "🟩 BUY", "#8bc34a"
-    elif score >= 40:
-        return "🟡 NEUTRAL", "#ffd54f"
-    elif score >= 20:
-        return "🟠 SELL", "#ff9800"
-    else:
-        return "🔴 STRONG SELL", "#e53935"
+signal_history_store = get_signal_history_store()
 
 
 def dot(pass_value) -> str:
-    """Converts a PASS/FAIL/YES/NO/N-A style value into a colored dot indicator."""
     if pass_value in ("PASS", "YES"):
         return "🟢"
     elif pass_value in ("FAIL", "NO"):
@@ -91,87 +77,12 @@ def dot(pass_value) -> str:
     return "⚪"
 
 
-def draw_confidence_gauge(score: int, label: str):
-    """Speedometer-style gauge with a real pointing needle, rendered with matplotlib
-    (tested directly in development to confirm the needle angle lines up with the bands).
-    Kept deliberately compact so it doesn't push the MTF/F&O panels below the fold."""
-    fig, ax = plt.subplots(figsize=(2.6, 1.7), subplot_kw={"aspect": "equal"})
-    fig.patch.set_facecolor("#0e1117")
-    ax.set_facecolor("#0e1117")
-
-    bands = [
-        (0, 20, "#e53935"), (20, 40, "#ff9800"), (40, 60, "#ffd54f"),
-        (60, 80, "#8bc34a"), (80, 100, "#1a9c4b"),
-    ]
-    for lo, hi, color in bands:
-        theta1 = 180 - (hi / 100) * 180
-        theta2 = 180 - (lo / 100) * 180
-        ax.add_patch(mpatches.Wedge((0, 0), 1.0, theta1, theta2, width=0.35, facecolor=color, edgecolor="#0e1117", linewidth=1))
-
-    angle_rad = math.radians(180 - (score / 100) * 180)
-    needle_len = 0.82
-    x_tip, y_tip = needle_len * math.cos(angle_rad), needle_len * math.sin(angle_rad)
-    ax.plot([0, x_tip], [0, y_tip], color="white", linewidth=2.5, solid_capstyle="round", zorder=5)
-    ax.add_patch(mpatches.Circle((0, 0), 0.06, facecolor="white", edgecolor="white", zorder=6))
-
-    ax.set_xlim(-1.15, 1.15)
-    ax.set_ylim(-0.15, 1.15)
-    ax.axis("off")
-    ax.text(0, -0.05, label, ha="center", va="top", fontsize=10, fontweight="bold", color="white")
-    ax.text(0, 0.45, f"{score}%", ha="center", va="center", fontsize=15, fontweight="bold", color="white")
-    fig.tight_layout(pad=0.3)
-    return fig
-
-
-CHART_TIMEFRAMES = {"1M": 21, "3M": 63, "6M": 126, "1Y": 252, "All": None}
-
-
-def draw_daily_chart(hist: dict, symbol: str, timeframe: str):
-    """Daily candlestick chart with 20/50-day moving averages and volume, built from Dhan's
-    historical daily candles (already cached 6h per symbol - no extra API call per timeframe
-    switch, this just slices the same cached data to a shorter/longer window).
-
-    NOTE: this is a v1 - it's DAILY granularity with a lookback-window selector (1M/3M/6M/1Y/All),
-    not true intraday (1-min/5-min) live charting with drawing tools the way Dhan's own charts
-    work. That would need Dhan's separate intraday-candle endpoint wired up as a further step."""
-    if not hist or not hist.get("close") or len(hist["close"]) < 5:
-        return None
-
-    df = pd.DataFrame({
-        "Open": hist["open"], "High": hist["high"], "Low": hist["low"],
-        "Close": hist["close"], "Volume": hist.get("volume", [0] * len(hist["close"])),
-    })
-    if "timestamp" in hist and len(hist["timestamp"]) == len(df):
-        df.index = pd.to_datetime(hist["timestamp"], unit="s")
-    else:
-        df.index = pd.date_range(end=pd.Timestamp.today(), periods=len(df), freq="B")
-
-    n_rows = CHART_TIMEFRAMES.get(timeframe)
-    if n_rows:
-        df = df.tail(n_rows)
-
-    mc = mpf.make_marketcolors(up="#1a9c4b", down="#e53935", edge="inherit", wick="inherit", volume="inherit")
-    style = mpf.make_mpf_style(
-        base_mpf_style="nightclouds", marketcolors=mc, facecolor="#0e1117", edgecolor="#0e1117",
-        figcolor="#0e1117", gridcolor="#222831",
-        rc={"axes.labelcolor": "white", "xtick.color": "white", "ytick.color": "white", "text.color": "white"},
-    )
-    mav = (20, 50) if len(df) >= 50 else ((20,) if len(df) >= 20 else ())
-    fig, _ = mpf.plot(
-        df, type="candle", mav=mav, volume=True, style=style, returnfig=True,
-        figsize=(11, 4.2), tight_layout=True, title=f"\n{symbol} - Daily ({timeframe})",
-    )
-    return fig
-
-
 @st.cache_data(ttl=14400)
 def fetch_dynamic_nse_fno_universe():
     """Builds the live F&O stock universe by combining:
       - Dhan's official instrument master CSV -> live Security IDs + CURRENT lot sizes
       - A local static sector/theme map (nifty_sectors.py) -> kept only for internal reference
-    Security IDs and lot sizes always come live from Dhan, never hardcoded, since a wrong
-    lot size feeding into a real order is a money-risk, not just a cosmetic bug.
-    This is cached for 4 hours - it does NOT re-run on every refresh cycle."""
+    Security IDs and lot sizes always come live from Dhan, never hardcoded."""
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         master_url = "https://images.dhan.co/api-data/api-scrip-master.csv"
@@ -225,10 +136,63 @@ def fetch_dynamic_nse_fno_universe():
 static_universe = fetch_dynamic_nse_fno_universe()
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def compute_backtest_summary(_engine, universe_df, lookahead_days):
+    """Real, verifiable accuracy check: walks EVERY stock's historical daily candles through
+    the exact same scoring logic the live scanner uses, then checks what actually happened to
+    price over the next `lookahead_days` trading days. No live_price/lookahead leakage - each
+    day's score only ever sees data up to that day. Cached for 6h - this is a research number,
+    not something that needs to be live."""
+    buckets = {"0-20 (Strong Sell)": [], "20-40 (Sell)": [], "40-60 (Neutral)": [],
+               "60-80 (Buy)": [], "80-100 (Strong Buy)": []}
+    for _, stock in universe_df.iterrows():
+        hist = _engine.fetcher.fetch_historical_daily(str(stock["ID"]))
+        if not hist:
+            continue
+        for score, fwd_ret in _engine.fetcher.backtest_signal_scores(hist, lookahead_days):
+            if score < 20:
+                buckets["0-20 (Strong Sell)"].append(fwd_ret)
+            elif score < 40:
+                buckets["20-40 (Sell)"].append(fwd_ret)
+            elif score < 60:
+                buckets["40-60 (Neutral)"].append(fwd_ret)
+            elif score < 80:
+                buckets["60-80 (Buy)"].append(fwd_ret)
+            else:
+                buckets["80-100 (Strong Buy)"].append(fwd_ret)
+
+    rows = []
+    for band, rets in buckets.items():
+        if not rets:
+            rows.append({"Score Band": band, "Signals Tested": 0, "Win Rate %": None, f"Avg {lookahead_days}d Fwd Return": None})
+            continue
+        win_rate = round(100 * sum(1 for r in rets if r > 0) / len(rets), 1)
+        avg_ret = round(sum(rets) / len(rets), 2)
+        rows.append({"Score Band": band, "Signals Tested": len(rets), "Win Rate %": win_rate,
+                      f"Avg {lookahead_days}d Fwd Return": f"{avg_ret:+.2f}%"})
+    return pd.DataFrame(rows)
+
+
+with st.expander("📊 Backtested Signal Accuracy (real, computed from this dashboard's own logic)", expanded=False):
+    st.caption(
+        f"For every stock in the universe, walks through its full price history day-by-day, computes what this "
+        f"dashboard's score WOULD have shown using only data available as of that day (no lookahead), and checks "
+        f"what price actually did over the next {BACKTEST_LOOKAHEAD_DAYS} trading days. This is OUR system's own "
+        f"verifiable track record - not a third party's marketing claim."
+    )
+    with st.spinner("Running backtest across the full universe (first load only, cached for 6h after)..."):
+        backtest_df = compute_backtest_summary(engine, static_universe, BACKTEST_LOOKAHEAD_DAYS)
+    st.dataframe(backtest_df, use_container_width=True, hide_index=True)
+    st.caption(
+        "Read this as: 'historically, when the score was in this band, X% of the time price was higher Y trading "
+        "days later.' A rising win-rate/return from left to right is what would make this scoring logic look "
+        "genuinely useful; a flat or inconsistent pattern means the signals aren't adding real predictive value yet."
+    )
+
+
 # ==============================================================================
-# EVERYTHING BELOW THIS POINT LIVES INSIDE ONE FRAGMENT - run_every re-executes ONLY
-# this function on a timer, and widget clicks inside it also only rerun this fragment,
-# not the whole page.
+# EVERYTHING BELOW LIVES INSIDE ONE FRAGMENT - run_every re-executes ONLY this function
+# on a timer, and widget clicks inside it also only rerun this fragment, not the whole page.
 # ==============================================================================
 @st.fragment(run_every=AUTO_REFRESH_SECONDS if auto_refresh_enabled else None)
 def live_dashboard(master_database):
@@ -252,186 +216,112 @@ def live_dashboard(master_database):
         return
 
     # ==============================================================================
-    # LAYOUT: wide FNO Universe Scanner on the left (full height), narrow stacked
-    # column on the right (Active Selection / Gauge / MTF / F&O) - matches the
-    # "Required UI View" mockup.
+    # Compute real signals for every stock, and update the persistent "since when has this
+    # stock been on the BUY/SELL side" timestamp store.
     # ==============================================================================
+    now = dt.datetime.now()
+    compiled_rows = []
+    with st.spinner("Computing live signals across the full F&O universe (first load only)..."):
+        for _, stock in master_database.iterrows():
+            symbol = stock["Symbol"]
+            close_val = float(stock["Price"])
+            sig = engine.fetcher.compute_indicator_signals(str(stock["ID"]), close_val)
+            atr_val = sig["atr"] if sig.get("atr") else round(close_val * 0.02, 2)
+            score = sig["score"]
+
+            direction = "BUY" if score >= BUY_SCORE_THRESHOLD else ("SELL" if score <= SELL_SCORE_THRESHOLD else "NEUTRAL")
+            prev = signal_history_store.get(symbol)
+            if prev is None or prev["direction"] != direction:
+                signal_history_store[symbol] = {"direction": direction, "since": now, "score": score}
+            else:
+                prev["score"] = score  # keep the original "since" timestamp, just refresh the score
+
+            compiled_rows.append({
+                "Ticker": symbol, "LTP": f"₹ {close_val}", "% Chg": f"{stock['PctChg']:+.2f}%",
+                "RSI": sig["rsi"] if sig["rsi"] is not None else "N/A",
+                "Supertrend": dot(sig["supertrend"]), "Trend": dot(sig["trend"]),
+                "Momentum": dot(sig["momentum"]), "Volume": dot(sig["volume"]),
+                "Breakout": dot(sig["breakout"]), "ATR": atr_val,
+                "_score": score, "_atr": atr_val, "_price": close_val, "_id": stock["ID"],
+            })
+
+    df_all = pd.DataFrame(compiled_rows).sort_values("_score", ascending=False).reset_index(drop=True)
+    df_scanner_visible = df_all.drop(columns=["_score", "_atr", "_price", "_id"])
+
     left_panel, right_panel = st.columns([scanner_width_pct, 100 - scanner_width_pct])
 
     with left_panel:
         with st.container(border=True):
             st.markdown("<div class='matrix-title'>❖ FNO UNIVERSE SCANNER</div>", unsafe_allow_html=True)
-
-            # Real indicator computation per stock. Historical candles are cached 6h per symbol
-            # and shared across all users, so this is only slow the very first time - after that
-            # it's instant. First load of the FULL universe can take a while; a spinner shows why.
-            compiled_rows = []
-            with st.spinner("Computing live signals across the full F&O universe (first load only)..."):
-                for _, stock in master_database.iterrows():
-                    close_val = float(stock["Price"])
-                    sig = engine.fetcher.compute_indicator_signals(str(stock["ID"]), close_val)
-                    # Real ATR from actual historical daily true range - falls back to the old
-                    # 2%-of-price estimate ONLY if there isn't enough history yet for this symbol.
-                    atr_val = sig["atr"] if sig.get("atr") else round(close_val * 0.02, 2)
-                    callout_label, _ = score_to_label(sig["score"])
-
-                    compiled_rows.append({
-                        "Ticker": stock["Symbol"], "LTP": f"₹ {close_val}", "% Chg": f"{stock['PctChg']:+.2f}%",
-                        "RSI": sig["rsi"] if sig["rsi"] is not None else "N/A",
-                        "Supertrend": dot(sig["supertrend"]), "Trend": dot(sig["trend"]),
-                        "Momentum": dot(sig["momentum"]), "Volume": dot(sig["volume"]),
-                        "Breakout": dot(sig["breakout"]), "Signal": callout_label,
-                        "MTF": "YES", "FNO": "YES", "ATR": atr_val, "_score": sig["score"], "_atr": atr_val,
-                    })
-
-            df_display = pd.DataFrame(compiled_rows).sort_values("_score", ascending=False).reset_index(drop=True)
-            scores_by_symbol = dict(zip(df_display["Ticker"], df_display["_score"]))
-            atr_by_symbol = dict(zip(df_display["Ticker"], df_display["_atr"]))
-            df_display_visible = df_display.drop(columns=["_score", "_atr"])
-
-            # Real, supported way to reduce wasted per-column space: explicit width config
-            # (unlike font-size, Streamlit's dataframe DOES respect this).
             if compact_columns:
                 narrow = st.column_config.Column(width="small")
-                col_config = {
-                    "Ticker": narrow, "LTP": narrow, "% Chg": narrow, "RSI": narrow,
-                    "Supertrend": narrow, "Trend": narrow, "Momentum": narrow, "Volume": narrow,
-                    "Breakout": narrow, "MTF": narrow, "FNO": narrow, "ATR": narrow,
-                    "Signal": st.column_config.Column(width="medium"),
-                }
+                col_config = {c: narrow for c in df_scanner_visible.columns if c != "Ticker"}
             else:
                 col_config = None
-
-            selected_row_data = st.dataframe(
-                df_display_visible, use_container_width=True, hide_index=True, height=scanner_height_px,
-                on_select="rerun", selection_mode="single-row", key="fno_scanner_df",
-                column_config=col_config,
+            st.dataframe(
+                df_scanner_visible, use_container_width=True, hide_index=True,
+                height=scanner_height_px, column_config=col_config,
             )
 
-    # --- Selection resolution (not tied to a specific column - needed by both the chart
-    # below and the right-hand panels) ---
-    all_symbols_ranked = df_display["Ticker"].tolist()
-    symbol_key = "selected_symbol"
-    last_idx_key = "selected_symbol_last_row_idx"
-
-    if symbol_key not in st.session_state or st.session_state[symbol_key] not in all_symbols_ranked:
-        # Default to the top-ranked (highest confidence) stock if nothing picked yet, or if
-        # the previously-selected symbol dropped out of the universe entirely.
-        st.session_state[symbol_key] = all_symbols_ranked[0] if all_symbols_ranked else None
-
-    # --- Selection sync fix ---
-    # The scanner re-sorts by confidence every refresh cycle, so a stock's row INDEX shifts
-    # over time even without a new click. Streamlit's dataframe selection persists by index,
-    # not by symbol - so re-resolving the symbol from that index on every single cycle (as
-    # before) meant a routine re-sort would silently swap in whatever symbol now sits at that
-    # old index. Fix: only re-resolve when the reported index has actually CHANGED since we
-    # last processed it (i.e. a genuinely new click) - otherwise leave the current pick alone.
-    current_rows = selected_row_data.selection.rows if selected_row_data.selection else []
-    if current_rows:
-        row_idx = int(current_rows[0])
-        if row_idx != st.session_state.get(last_idx_key) and row_idx < len(df_display):
-            st.session_state[symbol_key] = df_display.iloc[row_idx]["Ticker"]
-        st.session_state[last_idx_key] = row_idx
-
-    selected_symbol = st.session_state[symbol_key]
-    target_stock_df = master_database[master_database["Symbol"] == selected_symbol].reset_index(drop=True)
-    if target_stock_df.empty:
-        return
-    target_stock_row = target_stock_df.iloc[0].to_dict()
-    current_ltp = float(target_stock_row["Price"])
-    real_atr = atr_by_symbol.get(selected_symbol) or round(current_ltp * 0.02, 2)
-    strike_details = engine.optimize_strike_with_targets(str(target_stock_row["ID"]), current_ltp, real_atr)
-
     # ==============================================================================
-    # DAILY CHART (left column, below the scanner) - own fixed-height container so it
-    # doesn't force the whole page taller; timeframe switch just re-slices already-cached data.
+    # Top 5 BUY / Top 5 SELL alert boxes - sorted by MOST RECENT trigger time first
+    # (a real alert feed, not just a static ranked list), each with ATR-based T1/T2/SL.
     # ==============================================================================
-    with left_panel:
-        with st.container(border=True):
-            chart_title_col, chart_tf_col = st.columns([3, 1])
-            with chart_title_col:
-                st.markdown(f"<div class='matrix-title'>📈 {selected_symbol} - Daily Chart</div>", unsafe_allow_html=True)
-            with chart_tf_col:
-                timeframe = st.selectbox("Timeframe", list(CHART_TIMEFRAMES.keys()), index=2,
-                                          label_visibility="collapsed", key="chart_timeframe")
-            hist = engine.fetcher.fetch_historical_daily(str(target_stock_row["ID"]))
-            chart_fig = draw_daily_chart(hist, selected_symbol, timeframe)
-            if chart_fig is not None:
-                st.pyplot(chart_fig, use_container_width=True)
-                plt.close(chart_fig)
-            else:
-                st.info("Not enough historical data to draw a chart for this stock yet.")
-            st.caption(
-                "Daily candles with 20/50-day moving averages - v1. True intraday (1-min/5-min) "
-                "live charting with drawing tools is a bigger follow-up if you want full parity with Dhan's own charts."
-            )
+    def _targets(price, atr, is_buy):
+        sign = 1 if is_buy else -1
+        return {
+            "SL": round(price - sign * 1.5 * atr, 2),
+            "T1": round(price + sign * 1.5 * atr, 2),
+            "T2": round(price + sign * 3.0 * atr, 2),
+        }
 
     with right_panel:
         with st.container(border=True):
-            st.markdown("<div class='matrix-title'>🎯 Active Selection</div>", unsafe_allow_html=True)
-            quote_col, gauge_col = st.columns([1, 1])
-            with quote_col:
-                quote_rows = [{
-                    "Symbol": selected_symbol, "LTP": f"₹ {current_ltp}",
-                    "Chg %": next((r["% Chg"] for _, r in df_display.iterrows() if r["Ticker"] == selected_symbol), "N/A"),
-                }]
-                st.dataframe(pd.DataFrame(quote_rows), use_container_width=True, hide_index=True, height=80)
-                st.caption("Click any row in the scanner to change this.")
-            with gauge_col:
-                gauge_score = scores_by_symbol.get(selected_symbol, 50)
-                callout_text, _ = score_to_label(gauge_score)
-                fig = draw_confidence_gauge(gauge_score, callout_text)
-                st.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-
-        with st.container(border=True):
-            st.markdown("<div class='matrix-title'>❖ Call vs Put OI Bias</div>", unsafe_allow_html=True)
-            oi_bias = engine.fetcher.get_call_put_oi_bias(str(target_stock_row["ID"]))
-            if oi_bias["call_pct"] is not None:
-                call_pct, put_pct = oi_bias["call_pct"], oi_bias["put_pct"]
-                st.markdown(
-                    f"""<div style='display:flex; width:100%; height:26px; border-radius:4px; overflow:hidden; font-family:monospace; font-size:12px; font-weight:bold;'>
-                        <div style='width:{call_pct}%; background:#1a9c4b; display:flex; align-items:center; justify-content:center; color:white;'>{call_pct}%</div>
-                        <div style='width:{put_pct}%; background:#e53935; display:flex; align-items:center; justify-content:center; color:white;'>{put_pct}%</div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-                st.caption("Real Call vs Put Open Interest split from the option chain - not literal bid/ask order-book depth (that needs Dhan's separate websocket depth feed).")
+            st.markdown("<div class='buy-title'>🟢 TOP 5 BUY SIGNALS</div>", unsafe_allow_html=True)
+            buy_symbols = [s for s, v in signal_history_store.items() if v["direction"] == "BUY"]
+            buy_symbols.sort(key=lambda s: signal_history_store[s]["since"], reverse=True)
+            buy_rows = []
+            for sym in buy_symbols[:5]:
+                match = df_all[df_all["Ticker"] == sym]
+                if match.empty:
+                    continue
+                r = match.iloc[0]
+                tgt = _targets(r["_price"], r["_atr"], is_buy=True)
+                buy_rows.append({
+                    "Ticker": sym, "LTP": f"₹ {r['_price']}", "Score": r["_score"],
+                    "SL": f"₹ {tgt['SL']}", "T1": f"₹ {tgt['T1']}", "T2": f"₹ {tgt['T2']}",
+                    "Signal Since": signal_history_store[sym]["since"].strftime("%d-%b %H:%M"),
+                })
+            if buy_rows:
+                st.dataframe(pd.DataFrame(buy_rows), use_container_width=True, hide_index=True, height=215)
             else:
-                st.caption("Option chain OI data unavailable right now for this stock.")
+                st.caption("No stocks currently qualify as a BUY signal.")
 
         with st.container(border=True):
-            st.markdown(f"<div class='matrix-title'>❖ F&O Derivative Options Greek Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-            official_lot_multiplier = int(target_stock_row["LotSize"])
-            fno_rows = [
-                {"Metric": "Option Strike", "Value": f"{strike_details['strike']} {strike_details['type']}"},
-                {"Metric": "Entry Premium", "Value": f"₹ {strike_details['current_premium']}"},
-                {"Metric": "Premium SL", "Value": f"₹ {strike_details['premium_sl']}"},
-                {"Metric": "Contract Multiplier", "Value": f"{official_lot_multiplier} Shares (1 Lot)"},
-                {"Metric": "Premium TP", "Value": f"₹ {strike_details['premium_tp']}"},
-            ]
-            st.dataframe(pd.DataFrame(fno_rows), use_container_width=True, hide_index=True, height=215)
-            if st.button(f"🔥 FIRE F&O DERIVATIVE OPTIONS POSITION: {selected_symbol}", use_container_width=True):
-                payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "FNO", quantity=official_lot_multiplier)
-                response = engine.fetcher.place_live_order(payload)
-                st.balloons()
-                st.success(f"Live Option Order Fired! Units: {official_lot_multiplier}. ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+            st.markdown("<div class='sell-title'>🔴 TOP 5 SELL SIGNALS</div>", unsafe_allow_html=True)
+            sell_symbols = [s for s, v in signal_history_store.items() if v["direction"] == "SELL"]
+            sell_symbols.sort(key=lambda s: signal_history_store[s]["since"], reverse=True)
+            sell_rows = []
+            for sym in sell_symbols[:5]:
+                match = df_all[df_all["Ticker"] == sym]
+                if match.empty:
+                    continue
+                r = match.iloc[0]
+                tgt = _targets(r["_price"], r["_atr"], is_buy=False)
+                sell_rows.append({
+                    "Ticker": sym, "LTP": f"₹ {r['_price']}", "Score": r["_score"],
+                    "SL": f"₹ {tgt['SL']}", "T1": f"₹ {tgt['T1']}", "T2": f"₹ {tgt['T2']}",
+                    "Signal Since": signal_history_store[sym]["since"].strftime("%d-%b %H:%M"),
+                })
+            if sell_rows:
+                st.dataframe(pd.DataFrame(sell_rows), use_container_width=True, hide_index=True, height=215)
+            else:
+                st.caption("No stocks currently qualify as a SELL signal.")
 
-        with st.container(border=True):
-            st.markdown(f"<div class='matrix-title'>❖ MTF Equity Leverage Trading Target Matrix [{selected_symbol}]</div>", unsafe_allow_html=True)
-            mtf_rows = [
-                {"Metric": "Asset", "Value": target_stock_row["Symbol"]},
-                {"Metric": "Spot Entry", "Value": f"₹ {current_ltp}"},
-                {"Metric": "Stop Loss (SL)", "Value": f"₹ {strike_details['spot_sl']}"},
-                {"Metric": "Target (TP)", "Value": f"₹ {strike_details['spot_tp']}"},
-                {"Metric": "Max Funding", "Value": "Up to 4x Leverage"},
-                {"Metric": "Order Units", "Value": "10 Shares"},
-            ]
-            st.dataframe(pd.DataFrame(mtf_rows), use_container_width=True, hide_index=True, height=250)
-            if st.button(f"🚀 FIRE MTF SPOT MARGIN POSITION: {selected_symbol}", use_container_width=True):
-                payload = engine.generate_dhan_order_payload(target_stock_row["ID"], target_stock_row["Symbol"], "BUY", "MTF", quantity=10)
-                response = engine.fetcher.place_live_order(payload)
-                st.success(f"Live MTF Order Executed! ID: {response.get('data', {}).get('orderId', 'Payload Sent')}")
+        st.caption(
+            "Sorted by most recently triggered first. 'Signal Since' resets after each app reboot - "
+            "there's no memory of signals from before the app started watching this session."
+        )
 
 
 live_dashboard(static_universe)
