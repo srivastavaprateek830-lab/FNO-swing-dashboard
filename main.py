@@ -12,7 +12,8 @@ st.set_page_config(page_title="FNO Universe Scanner", layout="wide")
 AUTO_REFRESH_SECONDS = 30
 BUY_SCORE_THRESHOLD = 60     # score >= this counts as a BUY-side signal
 SELL_SCORE_THRESHOLD = 40    # score <= this counts as a SELL-side signal
-BACKTEST_LOOKAHEAD_DAYS = 5  # "swing" horizon used for the accuracy panel
+BUY_EXIT_THRESHOLD = 50      # once BUY, only reverts to neutral if score drops below this
+SELL_EXIT_THRESHOLD = 50     # once SELL, only reverts to neutral if score rises above this
 
 with st.sidebar:
     st.markdown("### ⚙️ Refresh Controls")
@@ -136,58 +137,74 @@ def fetch_dynamic_nse_fno_universe():
 static_universe = fetch_dynamic_nse_fno_universe()
 
 
+BACKTEST_HORIZONS = (1, 3, 5, 10, 15, 20)  # trading days held after the signal fires
+
+
 @st.cache_data(ttl=21600, show_spinner=False)
-def compute_backtest_summary(_engine, universe_df, lookahead_days):
+def compute_backtest_summary(_engine, universe_df, horizons):
     """Real, verifiable accuracy check: walks EVERY stock's historical daily candles through
     the exact same scoring logic the live scanner uses, then checks what actually happened to
-    price over the next `lookahead_days` trading days. No live_price/lookahead leakage - each
-    day's score only ever sees data up to that day. Cached for 6h - this is a research number,
-    not something that needs to be live."""
-    buckets = {"0-20 (Strong Sell)": [], "20-40 (Sell)": [], "40-60 (Neutral)": [],
-               "60-80 (Buy)": [], "80-100 (Strong Buy)": []}
+    price over SEVERAL different holding periods. No live_price/lookahead leakage - each day's
+    score only ever sees data up to that day. Cached for 6h - this is a research number, not
+    something that needs to be live."""
+    band_defs = [("0-20 (Strong Sell)", 0, 20), ("20-40 (Sell)", 20, 40), ("40-60 (Neutral)", 40, 60),
+                 ("60-80 (Buy)", 60, 80), ("80-100 (Strong Buy)", 80, 101)]
+    # {band: {horizon: [returns...]}}
+    buckets = {band: {h: [] for h in horizons} for band, _, _ in band_defs}
+
     for _, stock in universe_df.iterrows():
         hist = _engine.fetcher.fetch_historical_daily(str(stock["ID"]))
         if not hist:
             continue
-        for score, fwd_ret in _engine.fetcher.backtest_signal_scores(hist, lookahead_days):
-            if score < 20:
-                buckets["0-20 (Strong Sell)"].append(fwd_ret)
-            elif score < 40:
-                buckets["20-40 (Sell)"].append(fwd_ret)
-            elif score < 60:
-                buckets["40-60 (Neutral)"].append(fwd_ret)
-            elif score < 80:
-                buckets["60-80 (Buy)"].append(fwd_ret)
-            else:
-                buckets["80-100 (Strong Buy)"].append(fwd_ret)
+        multi = _engine.fetcher.backtest_signal_scores_multi_horizon(hist, horizons=horizons)
+        for h, pairs in multi.items():
+            for score, fwd_ret in pairs:
+                for band, lo, hi in band_defs:
+                    if lo <= score < hi:
+                        buckets[band][h].append(fwd_ret)
+                        break
 
     rows = []
-    for band, rets in buckets.items():
-        if not rets:
-            rows.append({"Score Band": band, "Signals Tested": 0, "Win Rate %": None, f"Avg {lookahead_days}d Fwd Return": None})
-            continue
-        win_rate = round(100 * sum(1 for r in rets if r > 0) / len(rets), 1)
-        avg_ret = round(sum(rets) / len(rets), 2)
-        rows.append({"Score Band": band, "Signals Tested": len(rets), "Win Rate %": win_rate,
-                      f"Avg {lookahead_days}d Fwd Return": f"{avg_ret:+.2f}%"})
+    for band, _, _ in band_defs:
+        row = {"Score Band": band}
+        best_h, best_win_rate = None, -1
+        for h in horizons:
+            rets = buckets[band][h]
+            if not rets:
+                row[f"{h}d Win Rate"] = None
+                row[f"{h}d Avg Return"] = None
+                continue
+            win_rate = round(100 * sum(1 for r in rets if r > 0) / len(rets), 1)
+            avg_ret = round(sum(rets) / len(rets), 2)
+            row[f"{h}d Win Rate"] = win_rate
+            row[f"{h}d Avg Return"] = f"{avg_ret:+.2f}%"
+            if win_rate > best_win_rate:
+                best_h, best_win_rate = h, win_rate
+        row["Signals Tested"] = len(buckets[band][horizons[0]])
+        row["Best Horizon"] = f"{best_h}d ({best_win_rate}%)" if best_h else "N/A"
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
 with st.expander("📊 Backtested Signal Accuracy (real, computed from this dashboard's own logic)", expanded=False):
     st.caption(
-        f"For every stock in the universe, walks through its full price history day-by-day, computes what this "
-        f"dashboard's score WOULD have shown using only data available as of that day (no lookahead), and checks "
-        f"what price actually did over the next {BACKTEST_LOOKAHEAD_DAYS} trading days. This is OUR system's own "
-        f"verifiable track record - not a third party's marketing claim."
+        "For every stock in the universe, walks through its full price history day-by-day, computes what this "
+        "dashboard's score WOULD have shown using only data available as of that day (no lookahead), and checks "
+        "what price actually did over several different holding periods. This is OUR system's own verifiable "
+        "track record - not a third party's marketing claim."
     )
-    with st.spinner("Running backtest across the full universe (first load only, cached for 6h after)..."):
-        backtest_df = compute_backtest_summary(engine, static_universe, BACKTEST_LOOKAHEAD_DAYS)
+    with st.spinner("Running backtest across the full universe and multiple holding periods (first load only, cached for 6h after)..."):
+        backtest_df = compute_backtest_summary(engine, static_universe, BACKTEST_HORIZONS)
     st.dataframe(backtest_df, use_container_width=True, hide_index=True)
     st.caption(
-        "Read this as: 'historically, when the score was in this band, X% of the time price was higher Y trading "
-        "days later.' A rising win-rate/return from left to right is what would make this scoring logic look "
-        "genuinely useful; a flat or inconsistent pattern means the signals aren't adding real predictive value yet."
+        "Read a row as: 'historically, when the score was in this band, here's the win rate and average return "
+        "for holding 1/3/5/10/15/20 trading days.' The 'Best Horizon' column shows which holding period had the "
+        "highest win rate for that band - use this to decide how long to hold after an alert fires, rather than "
+        "guessing. A rising win-rate/return from Strong Sell to Strong Buy is what would make this logic look "
+        "genuinely useful; a flat or inconsistent pattern means it isn't adding real predictive value yet."
     )
+
+
 
 
 # ==============================================================================
@@ -218,6 +235,12 @@ def live_dashboard(master_database):
     # ==============================================================================
     # Compute real signals for every stock, and update the persistent "since when has this
     # stock been on the BUY/SELL side" timestamp store.
+    #
+    # Hysteresis: a stock only ENTERS Buy/Sell at the 60/40 thresholds, but only EXITS back to
+    # Neutral once it crosses back past 50. Without this, a score sitting right at the boundary
+    # (e.g. flickering between 59 and 61 on live price noise) would flip direction - and reset
+    # its "Signal Since" timestamp - almost every refresh cycle, which defeats the whole point
+    # of tracking "how long has this actually been a live signal."
     # ==============================================================================
     now = dt.datetime.now()
     compiled_rows = []
@@ -229,24 +252,51 @@ def live_dashboard(master_database):
             atr_val = sig["atr"] if sig.get("atr") else round(close_val * 0.02, 2)
             score = sig["score"]
 
-            direction = "BUY" if score >= BUY_SCORE_THRESHOLD else ("SELL" if score <= SELL_SCORE_THRESHOLD else "NEUTRAL")
             prev = signal_history_store.get(symbol)
-            if prev is None or prev["direction"] != direction:
+            prev_direction = prev["direction"] if prev else "NEUTRAL"
+            if prev_direction == "BUY":
+                direction = "NEUTRAL" if score < BUY_EXIT_THRESHOLD else "BUY"
+            elif prev_direction == "SELL":
+                direction = "NEUTRAL" if score > SELL_EXIT_THRESHOLD else "SELL"
+            else:
+                direction = "BUY" if score >= BUY_SCORE_THRESHOLD else ("SELL" if score <= SELL_SCORE_THRESHOLD else "NEUTRAL")
+
+            just_flipped = prev is None or prev_direction != direction
+            if just_flipped:
                 signal_history_store[symbol] = {"direction": direction, "since": now, "score": score}
             else:
                 prev["score"] = score  # keep the original "since" timestamp, just refresh the score
 
+            # Combined categorical label - "Turning Bullish/Bearish" only on the cycle a stock
+            # actually crosses into Buy/Sell territory, otherwise a static score-band label.
+            if just_flipped and direction == "BUY":
+                signal_label = "🔵 Turning Bullish"
+            elif just_flipped and direction == "SELL":
+                signal_label = "🟠 Turning Bearish"
+            elif score >= 80:
+                signal_label = "🟢 Strong Buy"
+            elif score >= 60:
+                signal_label = "🟢 Buy"
+            elif score <= 20:
+                signal_label = "🔴 Strong Sell"
+            elif score <= 40:
+                signal_label = "🔴 Sell"
+            else:
+                signal_label = "⚪ Neutral"
+
             compiled_rows.append({
                 "Ticker": symbol, "LTP": f"₹ {close_val}", "% Chg": f"{stock['PctChg']:+.2f}%",
                 "RSI": sig["rsi"] if sig["rsi"] is not None else "N/A",
-                "Supertrend": dot(sig["supertrend"]), "Trend": dot(sig["trend"]),
-                "Momentum": dot(sig["momentum"]), "Volume": dot(sig["volume"]),
-                "Breakout": dot(sig["breakout"]), "ATR": atr_val,
+                "Supertrend": dot(sig["supertrend"]), "Momentum": dot(sig["momentum"]),
+                "Volume": dot(sig["volume"]), "Breakout": dot(sig["breakout"]),
+                "Signal": signal_label, "ATR": atr_val,
                 "_score": score, "_atr": atr_val, "_price": close_val, "_id": stock["ID"],
             })
 
     df_all = pd.DataFrame(compiled_rows).sort_values("_score", ascending=False).reset_index(drop=True)
     df_scanner_visible = df_all.drop(columns=["_score", "_atr", "_price", "_id"])
+
+    st.caption(f"🕒 Last updated: {now.strftime('%d-%b-%Y %H:%M:%S')} - if this timestamp isn't moving, auto-refresh isn't running.")
 
     left_panel, right_panel = st.columns([scanner_width_pct, 100 - scanner_width_pct])
 
