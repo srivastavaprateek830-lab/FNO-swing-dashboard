@@ -50,8 +50,8 @@ st.markdown("""
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
     div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .matrix-title { font-family: monospace; font-size: 12px; font-weight: bold; color: #FF9900; margin-bottom: 2px; }
-    .buy-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #1a9c4b; margin-bottom: 2px; }
-    .sell-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #e53935; margin-bottom: 2px; }
+    .buy-title { font-family: monospace; font-size: 10px; font-weight: bold; color: #1a9c4b; margin-bottom: 2px; }
+    .sell-title { font-family: monospace; font-size: 10px; font-weight: bold; color: #e53935; margin-bottom: 2px; }
 </style>
 """, unsafe_allow_html=True)
 
