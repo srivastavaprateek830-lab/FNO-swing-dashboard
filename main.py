@@ -1,5 +1,6 @@
 import io
 import datetime as dt
+from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 import requests
@@ -7,6 +8,9 @@ from signal_engine import TradingEngine
 import nifty_sectors
 
 st.set_page_config(page_title="FNO Universe Scanner", layout="wide")
+
+IST = ZoneInfo("Asia/Kolkata")  # Streamlit Cloud's servers run in UTC, not IST - without this,
+                                 # every timestamp on the page is off by +5:30
 
 # How often the live panel refreshes itself, in seconds.
 AUTO_REFRESH_SECONDS = 30
@@ -242,7 +246,7 @@ def live_dashboard(master_database):
     # its "Signal Since" timestamp - almost every refresh cycle, which defeats the whole point
     # of tracking "how long has this actually been a live signal."
     # ==============================================================================
-    now = dt.datetime.now()
+    now = dt.datetime.now(IST)
     compiled_rows = []
     with st.spinner("Computing live signals across the full F&O universe (first load only)..."):
         for _, stock in master_database.iterrows():
@@ -296,7 +300,7 @@ def live_dashboard(master_database):
     df_all = pd.DataFrame(compiled_rows).sort_values("_score", ascending=False).reset_index(drop=True)
     df_scanner_visible = df_all.drop(columns=["_score", "_atr", "_price", "_id"])
 
-    st.caption(f"🕒 Last updated: {now.strftime('%d-%b-%Y %H:%M:%S')} - if this timestamp isn't moving, auto-refresh isn't running.")
+    st.caption(f"🕒 Last updated: {now.strftime('%d-%b-%Y %H:%M:%S')} IST - if this timestamp isn't moving, auto-refresh isn't running.")
 
     left_panel, right_panel = st.columns([scanner_width_pct, 100 - scanner_width_pct])
 
