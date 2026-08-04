@@ -265,25 +265,32 @@ class DhanDataFetcher:
             "atr": round(atr_val, 2),
         }
 
-    def backtest_signal_scores(self, hist: dict, lookahead_days: int = 5) -> list:
-        """Walk-forward backtest: for every historical day (with enough warmup data), computes
-        what THIS dashboard's score would have been using only data available as of that day,
-        then checks the actual forward return over the next `lookahead_days` trading days.
-        Returns a list of (score, forward_return_pct) tuples - the raw material for computing
-        a real, verifiable hit-rate per score band."""
+    def backtest_signal_scores_multi_horizon(self, hist: dict, horizons=(1, 3, 5, 10, 15, 20)) -> dict:
+        """Same walk-forward backtest as before, but computes forward returns for SEVERAL
+        holding periods in one pass over the data (each day's score is computed once, then
+        checked against every horizon) - lets us answer 'which holding period actually works
+        best for this logic' instead of guessing at a single number.
+        Returns {horizon_days: [(score, forward_return_pct), ...], ...}."""
         if not hist or not hist.get("close"):
-            return []
+            return {h: [] for h in horizons}
         closes, highs, lows = list(hist["close"]), list(hist["high"]), list(hist["low"])
         volumes = list(hist.get("volume", []))
         n = len(closes)
-        results = []
-        for i in range(20, n - lookahead_days):
+        max_horizon = max(horizons)
+        results = {h: [] for h in horizons}
+        for i in range(20, n - max_horizon):
             sig = self._score_at_index(closes, highs, lows, volumes, i)
             if sig is None or closes[i] == 0:
                 continue
-            fwd_return = (closes[i + lookahead_days] - closes[i]) / closes[i] * 100
-            results.append((sig["score"], fwd_return))
+            for h in horizons:
+                if i + h < n:
+                    fwd_return = (closes[i + h] - closes[i]) / closes[i] * 100
+                    results[h].append((sig["score"], fwd_return))
         return results
+
+    def backtest_signal_scores(self, hist: dict, lookahead_days: int = 5) -> list:
+        """Single-horizon convenience wrapper kept for anything that only needs one horizon."""
+        return self.backtest_signal_scores_multi_horizon(hist, horizons=(lookahead_days,)).get(lookahead_days, [])
 
     def _get_nearest_expiry(self, security_id: str, underlying_seg: str):
         """Option chain requires an explicit expiry date, fetched from a separate endpoint.
