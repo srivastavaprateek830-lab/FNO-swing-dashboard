@@ -1,5 +1,6 @@
 import io
 import datetime as dt
+import threading
 from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
@@ -71,8 +72,19 @@ def get_signal_history_store():
     return {}
 
 
+@st.cache_resource
+def get_signal_history_lock():
+    """Guards signal_history_store. It's shared across every session/tab hitting this app, and
+    each one's 30s auto-refresh runs on its own thread - without a lock, one session iterating
+    the dict (building the Buy/Sell boxes) while another mutates it (a new signal firing) can
+    raise 'dictionary changed size during iteration', which is the likely cause of a box
+    rendering its heading but no rows: the exception cut the render short mid-way."""
+    return threading.Lock()
+
+
 engine = get_engine()
 signal_history_store = get_signal_history_store()
+signal_history_lock = get_signal_history_lock()
 
 
 def dot(pass_value) -> str:
@@ -336,27 +348,29 @@ def live_dashboard(master_database):
             atr_val = sig["atr"] if sig.get("atr") else round(close_val * 0.02, 2)
             score = sig["score"]
 
-            prev = signal_history_store.get(symbol)
-            prev_direction = prev["direction"] if prev else "NEUTRAL"
-            if prev_direction == "BUY":
-                direction = "NEUTRAL" if score < BUY_EXIT_THRESHOLD else "BUY"
-            elif prev_direction == "SELL":
-                direction = "NEUTRAL" if score > SELL_EXIT_THRESHOLD else "SELL"
-            else:
-                direction = "BUY" if score >= BUY_SCORE_THRESHOLD else ("SELL" if score <= SELL_SCORE_THRESHOLD else "NEUTRAL")
+            with signal_history_lock:
+                prev = signal_history_store.get(symbol)
+                prev_direction = prev["direction"] if prev else "NEUTRAL"
+                if prev_direction == "BUY":
+                    direction = "NEUTRAL" if score < BUY_EXIT_THRESHOLD else "BUY"
+                elif prev_direction == "SELL":
+                    direction = "NEUTRAL" if score > SELL_EXIT_THRESHOLD else "SELL"
+                else:
+                    direction = "BUY" if score >= BUY_SCORE_THRESHOLD else ("SELL" if score <= SELL_SCORE_THRESHOLD else "NEUTRAL")
 
-            just_flipped = prev is None or prev_direction != direction
-            if just_flipped:
-                signal_history_store[symbol] = {"direction": direction, "since": now, "score": score}
-                # Log every new BUY/SELL trigger to the persistent alert log - this is the
-                # permanent record the Reports section below reads from.
-                if direction in ("BUY", "SELL"):
-                    tgt = _targets(close_val, atr_val, is_buy=(direction == "BUY"))
-                    alerts_df = alert_log.append_alert(
-                        alerts_df, symbol, direction, now, close_val, tgt["SL"], tgt["T1"], tgt["T2"]
-                    )
-            else:
-                prev["score"] = score  # keep the original "since" timestamp, just refresh the score
+                just_flipped = prev is None or prev_direction != direction
+                if just_flipped:
+                    signal_history_store[symbol] = {"direction": direction, "since": now, "score": score}
+                else:
+                    prev["score"] = score  # keep the original "since" timestamp, just refresh the score
+
+            # Alert logging (file I/O) deliberately happens OUTSIDE the lock - no need to
+            # serialize disk writes across sessions just because they touch the same in-memory dict.
+            if just_flipped and direction in ("BUY", "SELL"):
+                tgt = _targets(close_val, atr_val, is_buy=(direction == "BUY"))
+                alerts_df = alert_log.append_alert(
+                    alerts_df, symbol, direction, now, close_val, tgt["SL"], tgt["T1"], tgt["T2"]
+                )
 
             # Combined categorical label - "Turning Bullish/Bearish" only on the cycle a stock
             # actually crosses into Buy/Sell territory, otherwise a static score-band label.
@@ -412,49 +426,61 @@ def live_dashboard(master_database):
     # ==============================================================================
     # Top 5 BUY / Top 5 SELL alert boxes - sorted by MOST RECENT trigger time first
     # (a real alert feed, not just a static ranked list), each with ATR-based T1/T2/SL.
+    #
+    # Snapshot the shared store under the lock, THEN release it before building/rendering rows -
+    # keeps the lock held for microseconds instead of across an entire render, and means a box
+    # can never be cut short mid-render by another session mutating the dict underneath it.
     # ==============================================================================
+    with signal_history_lock:
+        buy_snapshot = {s: dict(v) for s, v in signal_history_store.items() if v["direction"] == "BUY"}
+        sell_snapshot = {s: dict(v) for s, v in signal_history_store.items() if v["direction"] == "SELL"}
+
     with right_panel:
         with st.container(border=True):
             st.markdown("<div class='buy-title'>🟢 TOP 5 BUY SIGNALS</div>", unsafe_allow_html=True)
-            buy_symbols = [s for s, v in signal_history_store.items() if v["direction"] == "BUY"]
-            buy_symbols.sort(key=lambda s: signal_history_store[s]["since"], reverse=True)
-            buy_rows = []
-            for sym in buy_symbols[:5]:
-                match = df_all[df_all["Ticker"] == sym]
-                if match.empty:
-                    continue
-                r = match.iloc[0]
-                tgt = _targets(r["_price"], r["_atr"], is_buy=True)
-                buy_rows.append({
-                    "Ticker": sym, "LTP": f"₹ {r['_price']}", "Score": r["_score"],
-                    "SL": f"₹ {tgt['SL']}", "T1": f"₹ {tgt['T1']}", "T2": f"₹ {tgt['T2']}",
-                    "Signal Since": signal_history_store[sym]["since"].strftime("%d-%b %H:%M"),
-                })
-            if buy_rows:
-                st.dataframe(pd.DataFrame(buy_rows), use_container_width=True, hide_index=True, height=215)
-            else:
-                st.caption("No stocks currently qualify as a BUY signal.")
+            try:
+                buy_symbols = sorted(buy_snapshot.keys(), key=lambda s: buy_snapshot[s]["since"], reverse=True)
+                buy_rows = []
+                for sym in buy_symbols[:5]:
+                    match = df_all[df_all["Ticker"] == sym]
+                    if match.empty:
+                        continue
+                    r = match.iloc[0]
+                    tgt = _targets(r["_price"], r["_atr"], is_buy=True)
+                    buy_rows.append({
+                        "Ticker": sym, "LTP": f"₹ {r['_price']}", "Score": r["_score"],
+                        "SL": f"₹ {tgt['SL']}", "T1": f"₹ {tgt['T1']}", "T2": f"₹ {tgt['T2']}",
+                        "Signal Since": buy_snapshot[sym]["since"].strftime("%d-%b %H:%M"),
+                    })
+                if buy_rows:
+                    st.dataframe(pd.DataFrame(buy_rows), use_container_width=True, hide_index=True, height=215)
+                else:
+                    st.info("No stocks currently qualify as a BUY signal.")
+            except Exception as e:
+                st.error(f"Buy box failed to render this cycle: {e}")
 
         with st.container(border=True):
             st.markdown("<div class='sell-title'>🔴 TOP 5 SELL SIGNALS</div>", unsafe_allow_html=True)
-            sell_symbols = [s for s, v in signal_history_store.items() if v["direction"] == "SELL"]
-            sell_symbols.sort(key=lambda s: signal_history_store[s]["since"], reverse=True)
-            sell_rows = []
-            for sym in sell_symbols[:5]:
-                match = df_all[df_all["Ticker"] == sym]
-                if match.empty:
-                    continue
-                r = match.iloc[0]
-                tgt = _targets(r["_price"], r["_atr"], is_buy=False)
-                sell_rows.append({
-                    "Ticker": sym, "LTP": f"₹ {r['_price']}", "Score": r["_score"],
-                    "SL": f"₹ {tgt['SL']}", "T1": f"₹ {tgt['T1']}", "T2": f"₹ {tgt['T2']}",
-                    "Signal Since": signal_history_store[sym]["since"].strftime("%d-%b %H:%M"),
-                })
-            if sell_rows:
-                st.dataframe(pd.DataFrame(sell_rows), use_container_width=True, hide_index=True, height=215)
-            else:
-                st.caption("No stocks currently qualify as a SELL signal.")
+            try:
+                sell_symbols = sorted(sell_snapshot.keys(), key=lambda s: sell_snapshot[s]["since"], reverse=True)
+                sell_rows = []
+                for sym in sell_symbols[:5]:
+                    match = df_all[df_all["Ticker"] == sym]
+                    if match.empty:
+                        continue
+                    r = match.iloc[0]
+                    tgt = _targets(r["_price"], r["_atr"], is_buy=False)
+                    sell_rows.append({
+                        "Ticker": sym, "LTP": f"₹ {r['_price']}", "Score": r["_score"],
+                        "SL": f"₹ {tgt['SL']}", "T1": f"₹ {tgt['T1']}", "T2": f"₹ {tgt['T2']}",
+                        "Signal Since": sell_snapshot[sym]["since"].strftime("%d-%b %H:%M"),
+                    })
+                if sell_rows:
+                    st.dataframe(pd.DataFrame(sell_rows), use_container_width=True, hide_index=True, height=215)
+                else:
+                    st.info("No stocks currently qualify as a SELL signal.")
+            except Exception as e:
+                st.error(f"Sell box failed to render this cycle: {e}")
 
         st.caption(
             "Sorted by most recently triggered first. 'Signal Since' resets after each app reboot - "
