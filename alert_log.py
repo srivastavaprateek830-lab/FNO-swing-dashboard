@@ -29,7 +29,13 @@ def load_alert_log() -> pd.DataFrame:
             df = pd.read_csv(ALERT_LOG_PATH)
             for c in DATE_COLS:
                 if c in df.columns:
-                    df[c] = pd.to_datetime(df[c], errors="coerce")
+                    parsed = pd.to_datetime(df[c], errors="coerce")
+                    # Strip tzinfo if present WITHOUT shifting the clock value (tz_localize(None),
+                    # not tz_convert) - keeps everything as consistent naive "IST wall clock"
+                    # datetimes so subtraction across columns never mixes aware and naive.
+                    if hasattr(parsed.dt, "tz") and parsed.dt.tz is not None:
+                        parsed = parsed.dt.tz_localize(None)
+                    df[c] = parsed
             return df
         except Exception:
             pass
