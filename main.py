@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 from signal_engine import TradingEngine
 import nifty_sectors
+import alert_log
 
 st.set_page_config(page_title="FNO Universe Scanner", layout="wide")
 
@@ -50,8 +51,8 @@ st.markdown("""
     .block-container { padding-top: 0.8rem !important; padding-bottom: 0rem !important; padding-left: 1rem !important; padding-right: 1rem !important; }
     div[data-testid="stVerticalBlock"] > div { padding-bottom: 0rem !important; margin-bottom: -0.2rem !important; }
     .matrix-title { font-family: monospace; font-size: 12px; font-weight: bold; color: #FF9900; margin-bottom: 2px; }
-    .buy-title { font-family: monospace; font-size: 10px; font-weight: bold; color: #1a9c4b; margin-bottom: 2px; }
-    .sell-title { font-family: monospace; font-size: 10px; font-weight: bold; color: #e53935; margin-bottom: 2px; }
+    .buy-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #1a9c4b; margin-bottom: 2px; }
+    .sell-title { font-family: monospace; font-size: 13px; font-weight: bold; color: #e53935; margin-bottom: 2px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -211,6 +212,69 @@ with st.expander("📊 Backtested Signal Accuracy (real, computed from this dash
 
 
 
+with st.expander("📑 Alerts Report (MIS) - pull a period, validate what actually happened", expanded=False):
+    report_df = alert_log.load_alert_log()
+    if report_df.empty:
+        st.info("No alerts logged yet. Every BUY/SELL trigger from the live dashboard below gets recorded here automatically going forward.")
+    else:
+        report_df["trigger_time"] = pd.to_datetime(report_df["trigger_time"])
+        min_date, max_date = report_df["trigger_time"].min().date(), report_df["trigger_time"].max().date()
+
+        f1, f2, f3 = st.columns([2, 1, 1])
+        with f1:
+            date_range = st.date_input("Period", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+        with f2:
+            direction_filter = st.selectbox("Direction", ["All", "BUY", "SELL"])
+        with f3:
+            status_filter = st.selectbox("Status", ["All", "OPEN", "TARGET1_HIT", "TARGET2_HIT", "STOPPED_OUT"])
+
+        filtered = report_df.copy()
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_d, end_d = date_range
+            filtered = filtered[(filtered["trigger_time"].dt.date >= start_d) & (filtered["trigger_time"].dt.date <= end_d)]
+        if direction_filter != "All":
+            filtered = filtered[filtered["direction"] == direction_filter]
+        if status_filter != "All":
+            filtered = filtered[filtered["status"] == status_filter]
+
+        filtered["time_to_t1"] = pd.to_datetime(filtered["t1_hit_time"]) - filtered["trigger_time"]
+        filtered["time_to_t2"] = pd.to_datetime(filtered["t2_hit_time"]) - filtered["trigger_time"]
+
+        total = len(filtered)
+        t1_n, t2_n, sl_n, open_n = filtered["t1_hit"].sum(), filtered["t2_hit"].sum(), filtered["sl_hit"].sum(), (filtered["status"] == "OPEN").sum()
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Alerts", total)
+        m2.metric("Hit T1", f"{t1_n} ({100*t1_n/total:.0f}%)" if total else "0")
+        m3.metric("Hit T2", f"{t2_n} ({100*t2_n/total:.0f}%)" if total else "0")
+        m4.metric("Stopped Out", f"{sl_n} ({100*sl_n/total:.0f}%)" if total else "0")
+        m5.metric("Still Open", open_n)
+
+        display_cols = ["symbol", "direction", "trigger_time", "trigger_price", "sl", "t1", "t2",
+                         "status", "t1_hit_time", "t2_hit_time", "time_to_t1", "time_to_t2"]
+        st.dataframe(filtered[display_cols], use_container_width=True, hide_index=True, height=300)
+
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            csv_bytes = filtered[display_cols].to_csv(index=False).encode("utf-8")
+            st.download_button("⬇️ Download CSV", csv_bytes, file_name=f"alerts_report_{dt.date.today()}.csv",
+                                mime="text/csv", use_container_width=True)
+        with dl2:
+            try:
+                xlsx_buf = io.BytesIO()
+                filtered[display_cols].to_excel(xlsx_buf, index=False, engine="openpyxl")
+                st.download_button("⬇️ Download Excel", xlsx_buf.getvalue(), file_name=f"alerts_report_{dt.date.today()}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            except Exception as e:
+                st.caption(f"Excel export unavailable: {e}")
+
+        st.caption(
+            "This table only updates when the page fully reloads (it's outside the 30s auto-refresh loop by design, "
+            "so pulling a report doesn't interrupt the live scanner). Click 'Refresh Now' in the sidebar to pull "
+            "in anything logged since you opened this."
+        )
+
+
 # ==============================================================================
 # EVERYTHING BELOW LIVES INSIDE ONE FRAGMENT - run_every re-executes ONLY this function
 # on a timer, and widget clicks inside it also only rerun this fragment, not the whole page.
@@ -247,6 +311,17 @@ def live_dashboard(master_database):
     # of tracking "how long has this actually been a live signal."
     # ==============================================================================
     now = dt.datetime.now(IST)
+
+    def _targets(price, atr, is_buy):
+        sign = 1 if is_buy else -1
+        return {
+            "SL": round(price - sign * 1.5 * atr, 2),
+            "T1": round(price + sign * 1.5 * atr, 2),
+            "T2": round(price + sign * 3.0 * atr, 2),
+        }
+
+    alerts_df = alert_log.load_alert_log()
+
     compiled_rows = []
     with st.spinner("Computing live signals across the full F&O universe (first load only)..."):
         for _, stock in master_database.iterrows():
@@ -268,6 +343,13 @@ def live_dashboard(master_database):
             just_flipped = prev is None or prev_direction != direction
             if just_flipped:
                 signal_history_store[symbol] = {"direction": direction, "since": now, "score": score}
+                # Log every new BUY/SELL trigger to the persistent alert log - this is the
+                # permanent record the Reports section below reads from.
+                if direction in ("BUY", "SELL"):
+                    tgt = _targets(close_val, atr_val, is_buy=(direction == "BUY"))
+                    alerts_df = alert_log.append_alert(
+                        alerts_df, symbol, direction, now, close_val, tgt["SL"], tgt["T1"], tgt["T2"]
+                    )
             else:
                 prev["score"] = score  # keep the original "since" timestamp, just refresh the score
 
@@ -300,6 +382,11 @@ def live_dashboard(master_database):
     df_all = pd.DataFrame(compiled_rows).sort_values("_score", ascending=False).reset_index(drop=True)
     df_scanner_visible = df_all.drop(columns=["_score", "_atr", "_price", "_id"])
 
+    # Check every still-open alert against today's live prices, advance SL/T1/T2 status, persist.
+    current_prices = dict(zip(df_all["Ticker"], df_all["_price"]))
+    alerts_df = alert_log.update_open_alerts(alerts_df, current_prices, now)
+    alert_log.save_alert_log(alerts_df)
+
     st.caption(f"🕒 Last updated: {now.strftime('%d-%b-%Y %H:%M:%S')} IST - if this timestamp isn't moving, auto-refresh isn't running.")
 
     left_panel, right_panel = st.columns([scanner_width_pct, 100 - scanner_width_pct])
@@ -321,14 +408,6 @@ def live_dashboard(master_database):
     # Top 5 BUY / Top 5 SELL alert boxes - sorted by MOST RECENT trigger time first
     # (a real alert feed, not just a static ranked list), each with ATR-based T1/T2/SL.
     # ==============================================================================
-    def _targets(price, atr, is_buy):
-        sign = 1 if is_buy else -1
-        return {
-            "SL": round(price - sign * 1.5 * atr, 2),
-            "T1": round(price + sign * 1.5 * atr, 2),
-            "T2": round(price + sign * 3.0 * atr, 2),
-        }
-
     with right_panel:
         with st.container(border=True):
             st.markdown("<div class='buy-title'>🟢 TOP 5 BUY SIGNALS</div>", unsafe_allow_html=True)
