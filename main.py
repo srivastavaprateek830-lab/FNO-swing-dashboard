@@ -310,7 +310,12 @@ def live_dashboard(master_database):
     # its "Signal Since" timestamp - almost every refresh cycle, which defeats the whole point
     # of tracking "how long has this actually been a live signal."
     # ==============================================================================
-    now = dt.datetime.now(IST)
+    # Compute the current IST wall-clock time, then drop the tzinfo immediately. Every downstream
+    # datetime we create or store is a naive "IST clock reading" from here on - this avoids
+    # aware-vs-naive subtraction errors once these values round-trip through the CSV alert log
+    # (open alerts store NaT for t1_hit_time/t2_hit_time, and a column that's part real-timestamp,
+    # part NaT can come back from CSV as tz-naive even when the timestamps were tz-aware going in).
+    now = dt.datetime.now(IST).replace(tzinfo=None)
 
     def _targets(price, atr, is_buy):
         sign = 1 if is_buy else -1
